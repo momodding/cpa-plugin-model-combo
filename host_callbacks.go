@@ -9,8 +9,11 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
 )
 
+type hostRawCaller func(method string, payload json.RawMessage) (json.RawMessage, error)
+
 type callbackModelHost struct {
 	hostCallbackID string
+	rawCall        hostRawCaller
 }
 
 type hostModelExecutionRPC struct {
@@ -28,8 +31,31 @@ type streamCloseRPC struct {
 	Error    string `json:"error,omitempty"`
 }
 
+func (host callbackModelHost) call(method string, payload any) (json.RawMessage, error) {
+	rawPayload, err := json.Marshal(payload)
+	if err != nil {
+		return nil, fmt.Errorf("marshal host callback %s: %w", method, err)
+	}
+	if host.rawCall != nil {
+		return host.rawCall(method, rawPayload)
+	}
+	return callHostRaw(method, rawPayload)
+}
+
+func (host callbackModelHost) ListAuth() ([]pluginapi.HostAuthFileEntry, error) {
+	result, err := host.call(pluginabi.MethodHostAuthList, struct{}{})
+	if err != nil {
+		return nil, err
+	}
+	var entries []pluginapi.HostAuthFileEntry
+	if err := json.Unmarshal(result, &entries); err != nil {
+		return nil, fmt.Errorf("decode host.auth.list response: %w", err)
+	}
+	return entries, nil
+}
+
 func (host callbackModelHost) Execute(request pluginapi.HostModelExecutionRequest) (pluginapi.HostModelExecutionResponse, error) {
-	result, err := callHost(pluginabi.MethodHostModelExecute, hostModelExecutionRPC{HostModelExecutionRequest: request, HostCallbackID: host.hostCallbackID})
+	result, err := host.call(pluginabi.MethodHostModelExecute, hostModelExecutionRPC{HostModelExecutionRequest: request, HostCallbackID: host.hostCallbackID})
 	if err != nil {
 		return pluginapi.HostModelExecutionResponse{}, err
 	}
@@ -41,7 +67,7 @@ func (host callbackModelHost) Execute(request pluginapi.HostModelExecutionReques
 }
 
 func (host callbackModelHost) StartStream(request pluginapi.HostModelExecutionRequest) (pluginapi.HostModelStreamResponse, error) {
-	result, err := callHost(pluginabi.MethodHostModelExecuteStream, hostModelExecutionRPC{HostModelExecutionRequest: request, HostCallbackID: host.hostCallbackID})
+	result, err := host.call(pluginabi.MethodHostModelExecuteStream, hostModelExecutionRPC{HostModelExecutionRequest: request, HostCallbackID: host.hostCallbackID})
 	if err != nil {
 		return pluginapi.HostModelStreamResponse{}, err
 	}
@@ -52,8 +78,8 @@ func (host callbackModelHost) StartStream(request pluginapi.HostModelExecutionRe
 	return response, nil
 }
 
-func (callbackModelHost) ReadStream(streamID string) (pluginapi.HostModelStreamReadResponse, error) {
-	result, err := callHost(pluginabi.MethodHostModelStreamRead, pluginapi.HostModelStreamReadRequest{StreamID: streamID})
+func (host callbackModelHost) ReadStream(streamID string) (pluginapi.HostModelStreamReadResponse, error) {
+	result, err := host.call(pluginabi.MethodHostModelStreamRead, pluginapi.HostModelStreamReadRequest{StreamID: streamID})
 	if err != nil {
 		return pluginapi.HostModelStreamReadResponse{}, err
 	}
@@ -64,19 +90,19 @@ func (callbackModelHost) ReadStream(streamID string) (pluginapi.HostModelStreamR
 	return response, nil
 }
 
-func (callbackModelHost) CloseStream(streamID string) error {
+func (host callbackModelHost) CloseStream(streamID string) error {
 	if strings.TrimSpace(streamID) == "" {
 		return nil
 	}
-	_, err := callHost(pluginabi.MethodHostModelStreamClose, pluginapi.HostModelStreamCloseRequest{StreamID: streamID})
+	_, err := host.call(pluginabi.MethodHostModelStreamClose, pluginapi.HostModelStreamCloseRequest{StreamID: streamID})
 	return err
 }
 
-func (callbackModelHost) Emit(streamID string, payload []byte) error {
-	_, err := callHost(pluginabi.MethodHostStreamEmit, streamEmitRPC{StreamID: streamID, Payload: payload})
+func (host callbackModelHost) Emit(streamID string, payload []byte) error {
+	_, err := host.call(pluginabi.MethodHostStreamEmit, streamEmitRPC{StreamID: streamID, Payload: payload})
 	return err
 }
 
-func (callbackModelHost) ClosePluginStream(streamID, errorMessage string) {
-	_, _ = callHost(pluginabi.MethodHostStreamClose, streamCloseRPC{StreamID: streamID, Error: strings.TrimSpace(errorMessage)})
+func (host callbackModelHost) ClosePluginStream(streamID, errorMessage string) {
+	_, _ = host.call(pluginabi.MethodHostStreamClose, streamCloseRPC{StreamID: streamID, Error: strings.TrimSpace(errorMessage)})
 }

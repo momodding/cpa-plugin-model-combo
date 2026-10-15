@@ -110,7 +110,7 @@ type syncModelPricesRequest struct {
 	SyncSettings *priceSyncSettings `json:"sync_settings,omitempty"`
 }
 
-func (plugin *modelRouterPlugin) syncModelsDev(request syncModelPricesRequest) (modelPriceBook, error) {
+func (plugin *modelComboPlugin) syncModelsDev(request syncModelPricesRequest) (modelPriceBook, error) {
 	if plugin.priceSync == nil {
 		plugin.priceSync = &priceSyncState{}
 	}
@@ -211,7 +211,7 @@ func (fetcher *modelsDevFetcher) fetch(ctx context.Context) (map[string]modelsDe
 		return nil, fmt.Errorf("create models.dev request: %w", err)
 	}
 	request.Header.Set("Accept", "application/json")
-	request.Header.Set("User-Agent", "cpa-plugin-model-router/"+pluginVersion)
+	request.Header.Set("User-Agent", "cpa-model-combo/"+pluginVersion)
 	response, err := fetcher.client.Do(request)
 	if err != nil {
 		return nil, fmt.Errorf("fetch models.dev catalog: %w", err)

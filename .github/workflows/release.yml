@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: Existing tag to publish or refresh, for example v0.4.2.
+        description: Existing tag to publish or refresh, for example v0.1.0.
         required: true
         type: string
 
@@ -72,8 +72,8 @@ jobs:
           set -euo pipefail
           bash .github/xgo/release.sh \
             "$XGO_IMAGE" \
-            github.com/markhuangai/cpa-plugin-model-router \
-            model-router \
+            github.com/momodding/cpa-model-combo \
+            model-combo \
             "$VERSION"
       - uses: actions/upload-artifact@v7
         with:
@@ -104,11 +104,11 @@ jobs:
           set -euo pipefail
           version="${RELEASE_TAG#v}"
           expected=(
-            "model-router_${version}_linux_amd64.zip"
-            "model-router_${version}_linux_arm64.zip"
-            "model-router_${version}_darwin_amd64.zip"
-            "model-router_${version}_darwin_arm64.zip"
-            "model-router_${version}_windows_amd64.zip"
+            "model-combo_${version}_linux_amd64.zip"
+            "model-combo_${version}_linux_arm64.zip"
+            "model-combo_${version}_darwin_amd64.zip"
+            "model-combo_${version}_darwin_arm64.zip"
+            "model-combo_${version}_windows_amd64.zip"
           )
 
           cd release-assets
@@ -116,9 +116,9 @@ jobs:
             test -f "$archive"
             entries="$(unzip -Z1 "$archive")"
             case "$archive" in
-              *_windows_*) [[ "$entries" == 'model-router.dll' ]] ;;
-              *_darwin_*) [[ "$entries" == 'model-router.dylib' ]] ;;
-              *) [[ "$entries" == 'model-router.so' ]] ;;
+              *_windows_*) [[ "$entries" == 'model-combo.dll' ]] ;;
+              *_darwin_*) [[ "$entries" == 'model-combo.dylib' ]] ;;
+              *) [[ "$entries" == 'model-combo.so' ]] ;;
             esac
           done
           mapfile -t archives < <(find . -maxdepth 1 -type f -name '*.zip' -printf '%f\n' | sort)

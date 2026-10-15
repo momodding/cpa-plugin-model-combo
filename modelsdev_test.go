@@ -86,7 +86,7 @@ func TestModelsDevSyncPersistsTiersAndPreservesManualPrices(t *testing.T) {
 			},
 		},
 	}
-	plugin := &modelRouterPlugin{store: store, modelsDevFetcher: staticModelsDevFetcher{catalog: catalog}, priceSync: &priceSyncState{}}
+	plugin := &modelComboPlugin{store: store, modelsDevFetcher: staticModelsDevFetcher{catalog: catalog}, priceSync: &priceSyncState{}}
 	synced, err := plugin.syncModelsDev(syncModelPricesRequest{
 		Source:   priceSourceModelsDev,
 		Revision: book.Revision,

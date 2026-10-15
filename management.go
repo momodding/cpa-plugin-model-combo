@@ -13,9 +13,9 @@ import (
 )
 
 const (
-	modelRouterDashboardPath  = "/v0/resource/plugins/" + pluginID + "/config"
-	modelRouterValidationPath = "/v0/management/plugins/" + pluginID + "/validate"
-	modelRouterUsageBasePath  = "/v0/management/plugins/" + pluginID + "/usage"
+	modelComboDashboardPath   = "/v0/resource/plugins/" + pluginID + "/config"
+	modelComboValidationPath  = "/v0/management/plugins/" + pluginID + "/validate"
+	modelComboUsageBasePath   = "/v0/management/plugins/" + pluginID + "/usage"
 	maxManagementRequestBytes = 1 << 20
 )
 
@@ -41,15 +41,17 @@ type resourceRoute struct {
 	Description string `json:"Description"`
 }
 
-type modelRouterValidationRequest struct {
-	Enabled *bool            `json:"enabled"`
-	Routes  []modelRouteYAML `json:"routes"`
+type modelComboValidationRequest struct {
+	Enabled      *bool                      `json:"enabled"`
+	Routes       []modelRouteYAML           `json:"routes"`
+	Combos       []modelComboYAML           `json:"combos"`
+	AccountPools map[string]accountPoolYAML `json:"account_pools"`
 }
 
-func modelRouterManagementRegistration() managementRegistrationResponse {
+func modelComboManagementRegistration() managementRegistrationResponse {
 	return managementRegistrationResponse{
 		Routes: []managementRoute{
-			{Method: http.MethodPost, Path: "/plugins/" + pluginID + "/validate", Description: "Validate Model Router configuration before saving it."},
+			{Method: http.MethodPost, Path: "/plugins/" + pluginID + "/validate", Description: "Validate Model Combo configuration before saving it."},
 			{Method: http.MethodGet, Path: "/plugins/" + pluginID + "/usage/dashboard", Description: "Read usage summaries and both tables from one snapshot."},
 			{Method: http.MethodGet, Path: "/plugins/" + pluginID + "/usage/overview", Description: "Read usage summaries, trends, costs, and model breakdowns."},
 			{Method: http.MethodGet, Path: "/plugins/" + pluginID + "/usage/groups", Description: "Read paginated usage dimension groups."},
@@ -63,27 +65,27 @@ func modelRouterManagementRegistration() managementRegistrationResponse {
 		},
 		Resources: []resourceRoute{{
 			Path:        "/config",
-			Menu:        "Model Router",
+			Menu:        "Model Combo",
 			Description: "Configure logical aliases and ordered model target pools.",
 		}},
 	}
 }
 
-func handleModelRouterManagement(plugin *modelRouterPlugin, request pluginapi.ManagementRequest) pluginapi.ManagementResponse {
+func handleModelComboManagement(plugin *modelComboPlugin, request pluginapi.ManagementRequest) pluginapi.ManagementResponse {
 	path := strings.TrimRight(strings.TrimSpace(request.Path), "/")
-	if strings.HasPrefix(path, modelRouterUsageBasePath+"/") {
+	if strings.HasPrefix(path, modelComboUsageBasePath+"/") {
 		return handleUsageManagement(plugin, path, request)
 	}
 	switch path {
-	case modelRouterDashboardPath:
+	case modelComboDashboardPath:
 		if !strings.EqualFold(request.Method, http.MethodGet) {
-			return modelRouterJSONResponse(http.StatusMethodNotAllowed, map[string]any{
+			return modelComboJSONResponse(http.StatusMethodNotAllowed, map[string]any{
 				"error":   "method_not_allowed",
 				"message": "dashboard only supports GET",
 			})
 		}
 		if configDashboardError != nil {
-			return modelRouterJSONResponse(http.StatusInternalServerError, map[string]any{
+			return modelComboJSONResponse(http.StatusInternalServerError, map[string]any{
 				"error":   "dashboard_render_failed",
 				"message": configDashboardError.Error(),
 			})
@@ -99,42 +101,42 @@ func handleModelRouterManagement(plugin *modelRouterPlugin, request pluginapi.Ma
 			},
 			Body: append([]byte(nil), configDashboardHTML...),
 		}
-	case modelRouterValidationPath:
+	case modelComboValidationPath:
 		if !strings.EqualFold(request.Method, http.MethodPost) {
-			return modelRouterJSONResponse(http.StatusMethodNotAllowed, map[string]any{
+			return modelComboJSONResponse(http.StatusMethodNotAllowed, map[string]any{
 				"error":   "method_not_allowed",
 				"message": "validation only supports POST",
 			})
 		}
-		return validateModelRouterManagementConfig(request.Body)
+		return validateModelComboManagementConfig(request.Body)
 	default:
-		return modelRouterJSONResponse(http.StatusNotFound, map[string]any{
+		return modelComboJSONResponse(http.StatusNotFound, map[string]any{
 			"error":   "not_found",
 			"message": "management resource not found",
 		})
 	}
 }
 
-func validateModelRouterManagementConfig(body []byte) pluginapi.ManagementResponse {
+func validateModelComboManagementConfig(body []byte) pluginapi.ManagementResponse {
 	if len(body) > maxManagementRequestBytes {
-		return modelRouterJSONResponse(http.StatusRequestEntityTooLarge, map[string]any{
+		return modelComboJSONResponse(http.StatusRequestEntityTooLarge, map[string]any{
 			"valid":   false,
 			"error":   "request_too_large",
 			"message": "configuration exceeds the 1 MiB validation limit",
 		})
 	}
-	var request modelRouterValidationRequest
+	var request modelComboValidationRequest
 	decoder := json.NewDecoder(bytes.NewReader(body))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&request); err != nil {
-		return modelRouterJSONResponse(http.StatusBadRequest, map[string]any{
+		return modelComboJSONResponse(http.StatusBadRequest, map[string]any{
 			"valid":   false,
 			"error":   "invalid_request",
 			"message": err.Error(),
 		})
 	}
-	if err := ensureModelRouterJSONEOF(decoder); err != nil {
-		return modelRouterJSONResponse(http.StatusBadRequest, map[string]any{
+	if err := ensureModelComboJSONEOF(decoder); err != nil {
+		return modelComboJSONResponse(http.StatusBadRequest, map[string]any{
 			"valid":   false,
 			"error":   "invalid_request",
 			"message": err.Error(),
@@ -145,31 +147,38 @@ func validateModelRouterManagementConfig(body []byte) pluginapi.ManagementRespon
 		enabled = *request.Enabled
 	}
 	wire := struct {
-		Enabled bool             `yaml:"enabled"`
-		Routes  []modelRouteYAML `yaml:"routes"`
-	}{Enabled: enabled, Routes: request.Routes}
+		Enabled      bool                       `yaml:"enabled"`
+		Routes       []modelRouteYAML           `yaml:"routes"`
+		Combos       []modelComboYAML           `yaml:"combos"`
+		AccountPools map[string]accountPoolYAML `yaml:"account_pools"`
+	}{
+		Enabled:      enabled,
+		Routes:       request.Routes,
+		Combos:       request.Combos,
+		AccountPools: request.AccountPools,
+	}
 	raw, err := yaml.Marshal(wire)
 	if err != nil {
-		return modelRouterJSONResponse(http.StatusInternalServerError, map[string]any{
+		return modelComboJSONResponse(http.StatusInternalServerError, map[string]any{
 			"valid":   false,
 			"error":   "validation_failed",
 			"message": err.Error(),
 		})
 	}
 	if _, err := decodeRouterConfig(raw); err != nil {
-		return modelRouterJSONResponse(http.StatusBadRequest, map[string]any{
+		return modelComboJSONResponse(http.StatusBadRequest, map[string]any{
 			"valid":   false,
 			"error":   "invalid_config",
 			"message": err.Error(),
 		})
 	}
-	return modelRouterJSONResponse(http.StatusOK, map[string]any{
+	return modelComboJSONResponse(http.StatusOK, map[string]any{
 		"valid":       true,
 		"route_count": len(request.Routes),
 	})
 }
 
-func ensureModelRouterJSONEOF(decoder *json.Decoder) error {
+func ensureModelComboJSONEOF(decoder *json.Decoder) error {
 	var extra any
 	if err := decoder.Decode(&extra); err != io.EOF {
 		if err == nil {
@@ -180,7 +189,7 @@ func ensureModelRouterJSONEOF(decoder *json.Decoder) error {
 	return nil
 }
 
-func modelRouterJSONResponse(status int, value any) pluginapi.ManagementResponse {
+func modelComboJSONResponse(status int, value any) pluginapi.ManagementResponse {
 	body, err := json.Marshal(value)
 	if err != nil {
 		status = http.StatusInternalServerError

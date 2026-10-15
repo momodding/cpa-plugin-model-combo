@@ -1,18 +1,18 @@
 'use strict';
-const CONFIG_API='/v0/management/plugins/model-router/config';
-const VALIDATE_API='/v0/management/plugins/model-router/validate';
+const CONFIG_API='/v0/management/plugins/model-combo/config';
+const VALIDATE_API='/v0/management/plugins/model-combo/validate';
 const API_KEYS_API='/v0/management/api-keys';
 const MODELS_API='/v1/models';
-const USAGE_API='/v0/management/plugins/model-router/usage';
+const USAGE_API='/v0/management/plugins/model-combo/usage';
 const ROUTER_FILTER_MODEL_PREFIX='model:';
 const ROUTER_FILTER_ATTRIBUTION_PREFIX='attribution:';
 const DEFAULT_HIDDEN_GROUP_COLUMNS=['provider','result','router_model','service_tier','source'];
 const CPA_STORAGE_PREFIX='enc::v1::';
 const CPA_STORAGE_SALT='cli-proxy-api-webui::secure-storage';
-const SESSION_KEY='cpa_model_router_key';
-const REJECTED_KEY='cpa_model_router_rejected_key';
-const REJECTED_AT='cpa_model_router_rejected_at';
-const state={enabled:true,priority:'0',routes:[],availableModels:[],catalogLoaded:false,catalogError:'',baselineSnapshot:null,dirty:false,busy:false};
+const SESSION_KEY='cpa_model_combo_key';
+const REJECTED_KEY='cpa_model_combo_rejected_key';
+const REJECTED_AT='cpa_model_combo_rejected_at';
+const state={enabled:true,priority:'0',routes:[],combosDraft:'',accountPoolsDraft:'',availableModels:[],catalogLoaded:false,catalogError:'',baselineSnapshot:null,dirty:false,busy:false};
 const usageState={
   active:false,initialized:false,preferencesLoaded:false,loading:false,generation:0,controller:null,timer:0,filterTimer:0,displayedRange:null,displayedFilterKey:'',pendingFullRefresh:false,preferenceTimer:0,preferenceSaveGeneration:0,preferenceSaveInFlight:false,preferenceSaveQueued:false,resizeTimer:0,
   overview:null,groupPage:null,requestPage:null,range:'24h',granularity:'hour',customFrom:'',customTo:'',attribution:'',routerModel:'',providerModel:'',source:'',serviceTier:'',result:'',pricingDialogGeneration:0,pricingWriteInFlight:null,
@@ -45,6 +45,8 @@ const enabledEl=document.getElementById('plugin-enabled');
 const priorityEl=document.getElementById('plugin-priority');
 const saveStateEl=document.getElementById('save-state');
 const routesEl=document.getElementById('routes');
+const combosEl=document.getElementById('combos-json');
+const accountPoolsEl=document.getElementById('account-pools-json');
 const countEl=document.getElementById('route-count');
 const modelStatusEl=document.getElementById('model-status');
 const saveEl=document.getElementById('save');

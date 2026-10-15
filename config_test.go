@@ -360,3 +360,107 @@ routes:
 		})
 	}
 }
+
+func TestDecodeRouterConfigNormalizesMixedCombos(t *testing.T) {
+	cfg, err := decodeRouterConfig([]byte(`
+routes:
+  - alias: legacy
+    strategy: round-robin
+    cooldown_seconds: 15
+    targets:
+      - model: legacy-a
+        weight: 2
+      - model: legacy-b
+        weight: 1
+combos:
+  - alias: modern
+    groups:
+      - name: primary
+        strategy: weighted-round-robin
+        cooldown_seconds: 20
+        targets:
+          - model: modern-a
+            weight: 3
+            capabilities: [reasoning, tools]
+          - model: modern-b
+            weight: 1
+      - name: fallback
+        models: [modern-c]
+`))
+	if err != nil {
+		t.Fatalf("decodeRouterConfig() error = %v", err)
+	}
+	if len(cfg.Combos) != 2 {
+		t.Fatalf("combo count = %d, want 2", len(cfg.Combos))
+	}
+	legacy := cfg.Combos[0]
+	if legacy.Alias != "legacy" || len(legacy.Groups) != 1 || legacy.Groups[0].Name != "default" || legacy.Groups[0].Strategy != routeStrategyWeightedRoundRobin {
+		t.Fatalf("legacy combo = %#v", legacy)
+	}
+	modern := cfg.Combos[1]
+	if modern.Alias != "modern" || len(modern.Groups) != 2 || modern.Groups[0].CooldownSeconds != 20 {
+		t.Fatalf("modern combo = %#v", modern)
+	}
+	if got := modern.Groups[0].Targets[0]; got.Model != "modern-a" || got.Weight != 3 || !slices.Equal(got.Capabilities, []modelCapability{modelCapabilityReasoning, modelCapabilityTools}) {
+		t.Fatalf("modern target = %#v", got)
+	}
+	if len(cfg.Routes) != 2 || cfg.Routes[0].Alias != "legacy" || cfg.Routes[1].Alias != "modern" {
+		t.Fatalf("legacy route view = %#v", cfg.Routes)
+	}
+	if len(cfg.Routes[1].Targets) != 3 {
+		t.Fatalf("flattened modern targets = %#v", cfg.Routes[1].Targets)
+	}
+}
+
+func TestCompileLegacyComboCapsAttemptBudgetToTargets(t *testing.T) {
+	combo := modelCombo{
+		Alias: "legacy",
+		Groups: []modelGroup{{
+			Name:     "default",
+			Strategy: routeStrategyRoundRobin,
+			Targets:  []comboTarget{{Model: "legacy-a", Weight: 1}, {Model: "legacy-b", Weight: 1}},
+		}},
+		legacy: true,
+	}
+	plan := compileCombo(combo, resilienceConfig{MaxAttempts: 5})
+	if plan.maxAttempts != 2 {
+		t.Fatalf("legacy combo maxAttempts = %d, want 2", plan.maxAttempts)
+	}
+}
+
+func TestDecodeRouterConfigRejectsInvalidCombos(t *testing.T) {
+	cases := map[string]string{
+		"missing alias": `combos: [{groups: [{name: primary, models: [model-a]}]}]`,
+		"duplicate alias": `
+routes: [{alias: duplicate, models: [model-a]}]
+combos: [{alias: DUPLICATE, groups: [{name: primary, models: [model-b]}]}]
+`,
+		"duplicate group":           `combos: [{alias: demo, groups: [{name: primary, models: [model-a]}, {name: PRIMARY, models: [model-b]}]}]`,
+		"unknown strategy":          `combos: [{alias: demo, groups: [{name: primary, strategy: adaptive, models: [model-a]}]}]`,
+		"both target forms":         `combos: [{alias: demo, groups: [{name: primary, models: [model-a], targets: [{model: model-b}]}]}]`,
+		"no target form":            `combos: [{alias: demo, groups: [{name: primary}]}]`,
+		"conflicting cooldown":      `combos: [{alias: demo, groups: [{name: primary, cooldown_seconds: 1, cooldown-seconds: 2, models: [model-a]}]}]`,
+		"round robin weight":        `combos: [{alias: demo, groups: [{name: primary, strategy: round-robin, targets: [{model: model-a, weight: 2}]}]}]`,
+		"unknown capability":        `combos: [{alias: demo, groups: [{name: primary, targets: [{model: model-a, capabilities: [telepathy]}]}]}]`,
+		"invalid capability policy": `combos: [{alias: demo, capability_policy: permissive, groups: [{name: primary, models: [model-a]}]}]`,
+		"recursive candidate":       `combos: [{alias: demo, groups: [{name: primary, models: [demo]}]}]`,
+		"resilience bound":          `resilience: {max_attempts: 17}`,
+	}
+	for name, raw := range cases {
+		t.Run(name, func(t *testing.T) {
+			if _, err := decodeRouterConfig([]byte(raw)); err == nil {
+				t.Fatalf("decodeRouterConfig() accepted invalid combo config")
+			}
+		})
+	}
+}
+
+func TestDecodeRouterConfigDefaultsCapabilityPolicy(t *testing.T) {
+	config, err := decodeRouterConfig([]byte(`combos: [{alias: demo, groups: [{name: primary, models: [model-a]}]}]`))
+	if err != nil {
+		t.Fatalf("decodeRouterConfig() error = %v", err)
+	}
+	if config.Combos[0].CapabilityPolicy != capabilityPolicyCompatibleIfKnown {
+		t.Fatalf("CapabilityPolicy = %q", config.Combos[0].CapabilityPolicy)
+	}
+}

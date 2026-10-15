@@ -30,6 +30,17 @@
         <button id="add-route" class="secondary" type="button">Add route</button>
       </div>
       <section id="routes" class="routes" aria-live="polite"></section>
+      <section class="combo-editor">
+        <label for="combos-json">Advanced combo definitions</label>
+        <textarea id="combos-json" rows="10" spellcheck="false" placeholder='[{"alias":"chat","groups":[{"strategy":"priority","targets":[{"model":"provider/model"}]}]}]'></textarea>
+        <p>Optional raw <code>combos</code> array. Use for groups, weighted round-robin, capability policy, and target capabilities. Route table remains available for legacy routes.</p>
+      </section>
+      <section class="combo-editor">
+        <label for="account-pools-json">Account pools</label>
+        <textarea id="account-pools-json" rows="8" spellcheck="false" placeholder='{"pool":{"strategy":"weighted_round_robin","accounts":[{"key":"primary","auth_name":"primary.json","provider":"provider"}]}}'></textarea>
+        <p>Optional raw <code>account_pools</code> object. Account entries reference CPA auth metadata by <code>auth_name</code> and <code>provider</code>; credentials are never stored here.</p>
+      </section>
+
 
       <div id="configuration-actions" class="configuration-actions-dock" aria-hidden="true" hidden inert>
         <div id="configuration-actions-bar" class="footer-bar">

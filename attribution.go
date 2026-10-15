@@ -37,6 +37,8 @@ type attributionMarker struct {
 	startedAt     time.Time
 	credential    [sha256.Size]byte
 	hasCredential bool
+	auth          [sha256.Size]byte
+	hasAuth       bool
 }
 
 type attributionTracker struct {
@@ -64,26 +66,31 @@ func (tracker *attributionTracker) MarkDirect(request pluginapi.ModelRouteReques
 	if tracker == nil {
 		return
 	}
-	tracker.add(true, "", request.RequestedModel, request.Headers, "")
+	tracker.add(true, "", request.RequestedModel, request.Headers, "", "")
 }
 
 func (tracker *attributionTracker) MarkRouted(routerModel, providerModel string, headers http.Header) {
+	tracker.MarkRoutedWithAuth(routerModel, providerModel, headers, "")
+}
+
+func (tracker *attributionTracker) MarkRoutedWithAuth(routerModel, providerModel string, headers http.Header, authID string) {
 	if tracker == nil {
 		return
 	}
-	tracker.add(false, routerModel, providerModel, headers, "")
+	tracker.add(false, routerModel, providerModel, headers, "", authID)
 }
 
 func (tracker *attributionTracker) MarkDirectRequest(request pluginapi.RequestInterceptRequest) {
 	if tracker == nil {
 		return
 	}
-	tracker.add(true, "", firstNonEmpty(request.Model, request.RequestedModel), request.Headers, request.RequestID)
+	tracker.add(true, "", firstNonEmpty(request.Model, request.RequestedModel), request.Headers, request.RequestID, "")
 }
 
-func (tracker *attributionTracker) add(direct bool, routerModel, providerModel string, headers http.Header, requestID string) {
+func (tracker *attributionTracker) add(direct bool, routerModel, providerModel string, headers http.Header, requestID, authID string) {
 	credential := clientCredential(headers)
 	fingerprint, hasCredential := tracker.fingerprint(credential)
+	auth, hasAuth := tracker.fingerprint(strings.TrimSpace(authID))
 	marker := attributionMarker{
 		requestID:     strings.TrimSpace(requestID),
 		direct:        direct,
@@ -92,6 +99,8 @@ func (tracker *attributionTracker) add(direct bool, routerModel, providerModel s
 		startedAt:     tracker.now().UTC(),
 		credential:    fingerprint,
 		hasCredential: hasCredential,
+		auth:          auth,
+		hasAuth:       hasAuth,
 	}
 	tracker.mu.Lock()
 	tracker.pruneLocked(marker.startedAt)
@@ -115,14 +124,15 @@ func (tracker *attributionTracker) Match(record pluginapi.UsageRecord) attributi
 		requestedAt = tracker.now().UTC()
 	}
 	fingerprint, hasCredential := tracker.fingerprint(strings.TrimSpace(record.APIKey))
+	auth, hasAuth := tracker.fingerprint(strings.TrimSpace(record.AuthID))
 	models := compactModels(record.Model, record.Alias)
 
 	tracker.mu.Lock()
 	defer tracker.mu.Unlock()
 	tracker.pruneLocked(tracker.now().UTC())
-	indexes := tracker.matchingIndexesLocked(requestedAt, fingerprint, hasCredential, models, false, hasRequestedAt)
+	indexes := tracker.matchingIndexesLocked(requestedAt, fingerprint, hasCredential, auth, hasAuth, models, false, hasRequestedAt)
 	if len(indexes) == 0 {
-		indexes = tracker.matchingIndexesLocked(requestedAt, fingerprint, hasCredential, models, true, hasRequestedAt)
+		indexes = tracker.matchingIndexesLocked(requestedAt, fingerprint, hasCredential, auth, hasAuth, models, true, hasRequestedAt)
 	}
 	if len(indexes) == 0 {
 		return attributionResult{Kind: attributionUnresolved}
@@ -224,10 +234,13 @@ func (tracker *attributionTracker) updateDirectRequest(request pluginapi.Request
 	}
 }
 
-func (tracker *attributionTracker) matchingIndexesLocked(requestedAt time.Time, fingerprint [sha256.Size]byte, hasCredential bool, models []string, stripSuffix, enforceWindow bool) []int {
+func (tracker *attributionTracker) matchingIndexesLocked(requestedAt time.Time, fingerprint [sha256.Size]byte, hasCredential bool, auth [sha256.Size]byte, hasAuth bool, models []string, stripSuffix, enforceWindow bool) []int {
 	indexes := make([]int, 0, 2)
 	for index, marker := range tracker.markers {
 		if marker.hasCredential != hasCredential || (hasCredential && !hmac.Equal(marker.credential[:], fingerprint[:])) {
+			continue
+		}
+		if marker.hasAuth && (!hasAuth || !hmac.Equal(marker.auth[:], auth[:])) {
 			continue
 		}
 		if enforceWindow {

@@ -11,7 +11,7 @@ import (
 )
 
 func TestABIRegistrationRoutingAndCountTokens(t *testing.T) {
-	resetModelRouterABIState(t)
+	resetModelComboABIState(t)
 	config := []byte(`routes:
   - alias: smart
     models: [provider-a]
@@ -20,7 +20,7 @@ func TestABIRegistrationRoutingAndCountTokens(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	raw, err := handleModelRouterABIMethod(t.Context(), pluginabi.MethodPluginRegister, request)
+	raw, err := handleModelComboABIMethod(t.Context(), pluginabi.MethodPluginRegister, request)
 	if err != nil {
 		t.Fatalf("plugin.register error = %v", err)
 	}
@@ -32,7 +32,7 @@ func TestABIRegistrationRoutingAndCountTokens(t *testing.T) {
 	if err := json.Unmarshal(registrationEnvelope.Result, &registration); err != nil {
 		t.Fatalf("decode registration result: %v", err)
 	}
-	if !registrationEnvelope.OK || registration.SchemaVersion != registrationSchemaVersion || registration.Metadata.Name != pluginName || registration.Metadata.Version != "0.4.2" || !registration.Capabilities.ModelRegistrar || !registration.Capabilities.ModelRouter || !registration.Capabilities.Executor || !registration.Capabilities.RequestInterceptor || registration.Capabilities.RequestLifecycle || registration.Capabilities.ResponseInterceptor || registration.Capabilities.StreamInterceptor || !registration.Capabilities.UsagePlugin || !registration.Capabilities.ManagementAPI {
+	if !registrationEnvelope.OK || registration.SchemaVersion != registrationSchemaVersion || registration.Metadata.Name != pluginName || registration.Metadata.Version != "0.0.0-dev" || !registration.Capabilities.ModelRegistrar || !registration.Capabilities.ModelRouter || !registration.Capabilities.Executor || !registration.Capabilities.RequestInterceptor || registration.Capabilities.RequestLifecycle || registration.Capabilities.ResponseInterceptor || registration.Capabilities.StreamInterceptor || !registration.Capabilities.UsagePlugin || !registration.Capabilities.ManagementAPI {
 		t.Fatalf("registration = %#v", registration)
 	}
 
@@ -40,7 +40,7 @@ func TestABIRegistrationRoutingAndCountTokens(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	raw, err = handleModelRouterABIMethod(t.Context(), pluginabi.MethodModelRoute, routeRequest)
+	raw, err = handleModelComboABIMethod(t.Context(), pluginabi.MethodModelRoute, routeRequest)
 	if err != nil {
 		t.Fatalf("model.route error = %v", err)
 	}
@@ -62,18 +62,18 @@ func TestABIRegistrationRoutingAndCountTokens(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := handleModelRouterABIMethod(t.Context(), pluginabi.MethodUsageHandle, usageRequest); err != nil {
+	if _, err := handleModelComboABIMethod(t.Context(), pluginabi.MethodUsageHandle, usageRequest); err != nil {
 		t.Fatalf("usage.handle error = %v", err)
 	}
-	modelRouterABIState.Lock()
-	activePlugin := modelRouterABIState.plugin
-	modelRouterABIState.Unlock()
+	modelComboABIState.Lock()
+	activePlugin := modelComboABIState.plugin
+	modelComboABIState.Unlock()
 	page, err := activePlugin.store.Requests(usageFilter{From: time.Now().UTC().Add(-time.Hour), To: time.Now().UTC().Add(time.Hour)}, "time", "desc", 0, 10)
 	if err != nil || page.Total != 1 || page.Items[0].TotalTokens != 11 || page.Items[0].CacheCreationTokens != 2 || page.Items[0].EffectiveCacheReadTokens != 0 {
 		t.Fatalf("usage records = %#v, %v", page, err)
 	}
 
-	raw, err = handleModelRouterABIMethod(t.Context(), pluginabi.MethodExecutorCountTokens, nil)
+	raw, err = handleModelComboABIMethod(t.Context(), pluginabi.MethodExecutorCountTokens, nil)
 	if err != nil {
 		t.Fatalf("executor.count_tokens error = %v", err)
 	}
@@ -87,12 +87,12 @@ func TestABIRegistrationRoutingAndCountTokens(t *testing.T) {
 }
 
 func TestABIRegistrationUsesStreamBodyOmissionWhenHostSupportsIt(t *testing.T) {
-	resetModelRouterABIState(t)
+	resetModelComboABIState(t)
 	request, err := json.Marshal(lifecycleRequest{ConfigYAML: []byte("routes: []\n"), SchemaVersion: streamBodyOmissionSchemaVersion})
 	if err != nil {
 		t.Fatal(err)
 	}
-	raw, err := handleModelRouterABIMethod(t.Context(), pluginabi.MethodPluginRegister, request)
+	raw, err := handleModelComboABIMethod(t.Context(), pluginabi.MethodPluginRegister, request)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -109,27 +109,27 @@ func TestABIRegistrationUsesStreamBodyOmissionWhenHostSupportsIt(t *testing.T) {
 	}
 }
 
-func resetModelRouterABIState(t *testing.T) {
+func resetModelComboABIState(t *testing.T) {
 	t.Helper()
 	previousResolver := defaultDataPathResolver
 	testDataPath := filepath.Join(t.TempDir(), defaultDataFileName)
 	defaultDataPathResolver = func() string { return testDataPath }
-	modelRouterABIState.Lock()
-	previousPlugin := modelRouterABIState.plugin
-	modelRouterABIState.plugin = nil
-	modelRouterABIState.metadata = pluginapi.Metadata{}
-	modelRouterABIState.shuttingDown = false
-	modelRouterABIState.Unlock()
+	modelComboABIState.Lock()
+	previousPlugin := modelComboABIState.plugin
+	modelComboABIState.plugin = nil
+	modelComboABIState.metadata = pluginapi.Metadata{}
+	modelComboABIState.shuttingDown = false
+	modelComboABIState.Unlock()
 	if previousPlugin != nil && previousPlugin.store != nil {
 		_ = previousPlugin.store.Close()
 	}
 	t.Cleanup(func() {
-		modelRouterABIState.Lock()
-		plugin := modelRouterABIState.plugin
-		modelRouterABIState.plugin = nil
-		modelRouterABIState.metadata = pluginapi.Metadata{}
-		modelRouterABIState.shuttingDown = false
-		modelRouterABIState.Unlock()
+		modelComboABIState.Lock()
+		plugin := modelComboABIState.plugin
+		modelComboABIState.plugin = nil
+		modelComboABIState.metadata = pluginapi.Metadata{}
+		modelComboABIState.shuttingDown = false
+		modelComboABIState.Unlock()
 		if plugin != nil && plugin.store != nil {
 			_ = plugin.store.Close()
 		}

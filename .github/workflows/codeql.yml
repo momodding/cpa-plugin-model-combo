@@ -31,6 +31,6 @@ jobs:
         with:
           languages: go
       - name: Build plugin
-        run: CGO_ENABLED=1 go build -trimpath -buildmode=c-shared -o /tmp/model-router.so .
+        run: CGO_ENABLED=1 go build -trimpath -buildmode=c-shared -o /tmp/model-combo.so .
       - name: Analyze
         uses: github/codeql-action/analyze@v3

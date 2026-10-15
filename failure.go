@@ -5,11 +5,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"net"
 	"net/http"
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 )
 
 var statusPattern = regexp.MustCompile(`(?i)(?:status|http status|status_code)[^0-9]*(\d{3})`)
@@ -115,16 +117,8 @@ func (p fallbackPolicy) shouldFallback(status int) bool {
 }
 
 func eligibleRouteFailure(err error, policy fallbackPolicy) bool {
-	if err == nil || terminalRequestError(err) {
-		return false
-	}
-	if status := statusFromError(err); status > 0 {
-		if persistedResponseMiss(status, err.Error()) {
-			return false
-		}
-		return policy.shouldFallback(status)
-	}
-	return recognizableTransientError(err)
+	failure := classifyAttemptFailure(err, nil, policy, 0, time.Duration(math.MaxInt64))
+	return failure.retry
 }
 
 // persistedResponseMiss reports the 404 that describes the request rather than

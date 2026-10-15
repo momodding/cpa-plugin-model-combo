@@ -1,16 +1,16 @@
 # Usage Tracking
 
-This document is the implementation contract for Model Router usage tracking. Keep it with the feature when rebasing or syncing changes from another remote.
+This document is the implementation contract for Model Combo usage tracking. Keep it with the feature when rebasing or syncing changes from another remote.
 
 ## Scope
 
-The feature adds a **Usage tracking** tab to the existing Model Router management page. **Configuration** remains the default tab, and the centered tab controls sit above the route table and **Add route** button.
+The feature adds a **Usage tracking** tab to the existing Model Combo management page. **Configuration** remains the default tab, and the centered tab controls sit above the route table and **Add route** button.
 
 Usage tracking covers both kinds of CPA traffic:
 
 | Attribution | `router_model` | `provider_model` | Stored row |
 | --- | --- | --- | --- |
-| Routed | Client-visible Model Router alias | Physical CPA target | One row per delivered CPA usage record for an attempted target, including failures before failover |
+| Routed | Client-visible Model Combo alias | Physical CPA target | One row per delivered CPA usage record for an attempted target, including failures before failover |
 | Direct | Empty | Physical CPA model | One row per delivered CPA usage record for a direct request |
 | Unattributed official record | Empty | Model from CPA's usage record | One row when a safe correlation cannot be made |
 
@@ -32,37 +32,37 @@ The feature intentionally does not include:
 ```yaml
 plugins:
   configs:
-    model-router:
+    model-combo:
       enabled: true
-      data_path: "/CLIProxyAPI/plugins/model-router.db"
+      data_path: "/CLIProxyAPI/plugins/model-combo.db"
       retention_days: 365
       routes: []
 ```
 
 | Field | Default | Validation |
 | --- | --- | --- |
-| `data_path` | CPA root plus `plugins/model-router.db` | Converted to a clean absolute path; the parent directory is created with mode `0700` |
+| `data_path` | CPA root plus `plugins/model-combo.db` | Converted to a clean absolute path; the parent directory is created with mode `0700` |
 | `retention_days` | `365` | Integer from 1 through 3650 |
 
-`data_path` is a filesystem path, not a `file://` URI. Windows examples are `plugins/model-router.db`, `D:/CLIProxyAPI/plugins/model-router.db`, and `'D:\CLIProxyAPI\plugins\model-router.db'` in YAML. Relative paths resolve from the CPA process working directory. Configure drive-letter paths without an extra leading slash; SQLite URI encoding is handled internally.
+`data_path` is a filesystem path, not a `file://` URI. Windows examples are `plugins/model-combo.db`, `D:/CLIProxyAPI/plugins/model-combo.db`, and `'D:\CLIProxyAPI\plugins\model-combo.db'` in YAML. Relative paths resolve from the CPA process working directory. Configure drive-letter paths without an extra leading slash; SQLite URI encoding is handled internally.
 
 If `data_path` is absent, resolution checks:
 
 1. the loaded shared-library path for an ancestor named `plugins`;
 2. the CPA executable directory for a `plugins` directory;
 3. the current working directory for a `plugins` directory;
-4. `<absolute working directory>/plugins/model-router.db` when no CPA layout is found.
+4. `<absolute working directory>/plugins/model-combo.db` when no CPA layout is found.
 
-The resolver does not inspect, copy, or migrate the former default at `<CPA root>/data/model-router-usage.db`. An upgrade with no explicit `data_path` starts a new database. Configure the former path explicitly when its history must remain active.
+The resolver does not inspect, copy, or migrate the former default at `<CPA root>/data/model-combo-usage.db`. An upgrade with no explicit `data_path` starts a new database. Configure the former path explicitly when its history must remain active.
 
 The plugins directory must be writable and persistently mounted. Use an explicit absolute path elsewhere when production mounts plugin binaries read-only. Process restart persistence requires the next process to open the same file. Container replacement persistence requires that file's parent directory to be mounted outside the disposable container layer.
 
-The database is dedicated to Model Router and uses SQLite WAL with file mode `0600`. A successful record, price edit, or preference edit commits before its API call returns. There is no in-memory write batch to flush during shutdown. WAL permits an old and a new plugin generation to overlap during a hot update without holding a process-lifetime bbolt lock.
+The database is dedicated to Model Combo and uses SQLite WAL with file mode `0600`. A successful record, price edit, or preference edit commits before its API call returns. There is no in-memory write batch to flush during shutdown. WAL permits an old and a new plugin generation to overlap during a hot update without holding a process-lifetime bbolt lock.
 
 The SQLite schema contains:
 
 ```text
-model-router.db
+model-combo.db
 ├── store_state
 │   ├── storage_schema_version
 │   ├── next_sequence
@@ -94,7 +94,7 @@ The backup is the original bbolt file and must not be overwritten with an unveri
 
 ## CPA usage delivery and attribution
 
-CPA's `usage_plugin` callback is the sole usage source. CPA normalizes provider metadata, timing, failures, totals, cache reads, cache creation, and reasoning before delivering `usage.handle`; Model Router does not parse response bodies or stream chunks for usage and does not persist a fallback record.
+CPA's `usage_plugin` callback is the sole usage source. CPA normalizes provider metadata, timing, failures, totals, cache reads, cache creation, and reasoning before delivering `usage.handle`; Model Combo does not parse response bodies or stream chunks for usage and does not persist a fallback record.
 
 ```text
 request starts
@@ -109,7 +109,7 @@ CPA usage.handle callback --> correlate marker and store one request row
 
 Correlation uses request time, provider model, and an in-memory keyed fingerprint of the client credential when available. The fingerprint secret is random for the process and is never persisted. A uniquely matched marker is consumed. Conflicting candidates and timestamp-less callbacks with multiple active candidates are not guessed; the delivered record is retained as `unattributed`. Markers expire after 24 hours and are capped at 50,000 entries.
 
-CPA v7.3.9 or newer is required. That release preserves numeric HTTP statuses returned through native model callbacks, which lets Model Router apply its configured fallback rules. CPA v7.2.143 also detached asynchronous native usage delivery from request cancellation while preserving context values. CPA v7.2.142 and older can cancel `usage.handle` before Model Router receives it; the plugin does not recreate missing records from response bodies.
+CPA v7.3.9 or newer is required. That release preserves numeric HTTP statuses returned through native model callbacks, which lets Model Combo apply its configured fallback rules. CPA v7.2.143 also detached asynchronous native usage delivery from request cancellation while preserving context values. CPA v7.2.142 and older can cancel `usage.handle` before Model Combo receives it; the plugin does not recreate missing records from response bodies.
 
 Routed stream retry behavior is unchanged: an attempt can fail over only before any upstream payload is emitted. CPA remains responsible for stream timing and usage totals.
 
@@ -201,16 +201,16 @@ All endpoints require CPA Management API authentication.
 
 | Method | Path | Purpose |
 | --- | --- | --- |
-| `GET` | `/v0/management/plugins/model-router/usage/dashboard` | Overview and both tables from one read snapshot |
-| `GET` | `/v0/management/plugins/model-router/usage/overview` | Summary, series, filter values, and storage status |
-| `GET` | `/v0/management/plugins/model-router/usage/groups` | Sorted and paginated grouped usage |
-| `GET` | `/v0/management/plugins/model-router/usage/requests` | Sorted and paginated request details |
-| `GET` | `/v0/management/plugins/model-router/usage/prices` | Read the price book |
-| `PUT` | `/v0/management/plugins/model-router/usage/prices` | Replace prices and sync settings at an expected revision |
-| `POST` | `/v0/management/plugins/model-router/usage/prices/sync` | Synchronize observed models from models.dev |
-| `GET` | `/v0/management/plugins/model-router/usage/preferences` | Read dashboard preferences |
-| `PUT` | `/v0/management/plugins/model-router/usage/preferences` | Save dashboard preferences |
-| `POST` | `/v0/management/plugins/model-router/usage/reset` | Delete usage after receiving `{"confirm":"reset"}` |
+| `GET` | `/v0/management/plugins/model-combo/usage/dashboard` | Overview and both tables from one read snapshot |
+| `GET` | `/v0/management/plugins/model-combo/usage/overview` | Summary, series, filter values, and storage status |
+| `GET` | `/v0/management/plugins/model-combo/usage/groups` | Sorted and paginated grouped usage |
+| `GET` | `/v0/management/plugins/model-combo/usage/requests` | Sorted and paginated request details |
+| `GET` | `/v0/management/plugins/model-combo/usage/prices` | Read the price book |
+| `PUT` | `/v0/management/plugins/model-combo/usage/prices` | Replace prices and sync settings at an expected revision |
+| `POST` | `/v0/management/plugins/model-combo/usage/prices/sync` | Synchronize observed models from models.dev |
+| `GET` | `/v0/management/plugins/model-combo/usage/preferences` | Read dashboard preferences |
+| `PUT` | `/v0/management/plugins/model-combo/usage/preferences` | Save dashboard preferences |
+| `POST` | `/v0/management/plugins/model-combo/usage/reset` | Delete usage after receiving `{"confirm":"reset"}` |
 
 Overview, group, and request queries accept RFC3339 `from` and `to` plus optional `attribution`, `router_model`, `provider_model`, `source`, `service_tier`, and `result` filters. `router_model` always matches a literal route alias. Use `attribution=direct`, `attribution=unattributed`, or `attribution=routed` to filter by request origin; this keeps aliases named `direct` or `unattributed` distinct from the synthetic traffic classes. Group and request endpoints also accept `sort`, `order`, `offset`, and `limit`; the maximum page size is 500.
 
@@ -280,4 +280,4 @@ Then install the built library in a disposable CPA instance and verify:
 
 ## Origin
 
-The dashboard information architecture, pricing workflow, persistence model, and operational lessons were adapted from [AITNR/cap-token-usage-tracker](https://github.com/AITNR/cap-token-usage-tracker) at commit `056175a7b3165365d0fffa36283430020aa9d900`. Model Router uses its own implementation and reduced scope. See [THIRD_PARTY_NOTICES.md](../THIRD_PARTY_NOTICES.md).
+The dashboard information architecture, pricing workflow, persistence model, and operational lessons were adapted from [AITNR/cap-token-usage-tracker](https://github.com/AITNR/cap-token-usage-tracker) at commit `056175a7b3165365d0fffa36283430020aa9d900`. Model Combo uses its own implementation and reduced scope. See [THIRD_PARTY_NOTICES.md](../THIRD_PARTY_NOTICES.md).

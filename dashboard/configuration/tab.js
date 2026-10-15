@@ -11,6 +11,8 @@ function configurationSnapshot(){
   return JSON.stringify({
     enabled:Boolean(state.enabled),
     priority:canonicalIntegerDraft(state.priority),
+    combos:state.combosDraft.trim(),
+    accountPools:state.accountPoolsDraft.trim(),
     routes:state.routes.map(route=>({
       alias:String(route.alias===undefined||route.alias===null?'':route.alias).trim(),
       strategy:String(route.strategy===undefined||route.strategy===null?'':route.strategy),
@@ -115,7 +117,7 @@ function normalizeModelCatalog(payload,routes){
   payload.data.forEach(item=>{
     const id=item&&typeof item.id==='string'?item.id.trim():'';
     const owner=item&&typeof item.owned_by==='string'?item.owned_by.trim().toLowerCase():'';
-    if(!id||owner==='model-router'||aliases.has(id.toLowerCase())||seen.has(id))return;
+    if(!id||owner==='model-combo'||aliases.has(id.toLowerCase())||seen.has(id))return;
     seen.add(id);
     models.push(id);
   });
@@ -172,6 +174,8 @@ async function loadConfiguration(){
     state.enabled=config.enabled!==false;
     state.priority=Number.isInteger(config.priority)?String(config.priority):'0';
     state.routes=source.map(normalizeRoute);
+    state.combosDraft=Array.isArray(config.combos)?JSON.stringify(config.combos,null,2):'';
+    state.accountPoolsDraft=config.account_pools&&typeof config.account_pools==='object'&&!Array.isArray(config.account_pools)?JSON.stringify(config.account_pools,null,2):'';
     if(catalogResult.status==='fulfilled'){
       try{
         state.availableModels=normalizeModelCatalog(catalogResult.value,state.routes);
@@ -180,6 +184,8 @@ async function loadConfiguration(){
     }else state.catalogError=catalogResult.reason.message||'CPA models could not be loaded.';
     enabledEl.checked=state.enabled;
     priorityEl.value=state.priority;
+    combosEl.value=state.combosDraft;
+    accountPoolsEl.value=state.accountPoolsDraft;
     updateModelStatus();
     renderRoutes();
     workspaceEl.hidden=false;
@@ -452,16 +458,29 @@ async function saveConfiguration(){
   if(state.busy||!state.dirty)return;
   const routes=serializeRoutes();
   const errors=validateClient(routes);
+  let combos=[];
+  const comboSource=state.combosDraft.trim();
+  if(comboSource){
+    try{combos=JSON.parse(comboSource)}catch(error){showToast('Advanced combo definitions must be valid JSON: '+error.message,'error');return}
+    if(!Array.isArray(combos)){showToast('Advanced combo definitions must be a JSON array.','error');return}
+  }
+  let accountPools={};
+  const accountPoolSource=state.accountPoolsDraft.trim();
+  if(accountPoolSource){
+    try{accountPools=JSON.parse(accountPoolSource)}catch(error){showToast('Account pools must be valid JSON: '+error.message,'error');return}
+    if(!accountPools||Array.isArray(accountPools)||typeof accountPools!=='object'){showToast('Account pools must be a JSON object.','error');return}
+  }
   if(errors.length){showToast(errors[0]+(errors.length>1?' '+(errors.length-1)+' more issue(s).':''),'error');return}
   const submittedSnapshot=configurationSnapshot();
   setBusy(true);
   saveStateEl.textContent='Validating…';
   try{
-    await requestManagementJSON(VALIDATE_API,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({enabled:state.enabled,routes})});
+    await requestManagementJSON(VALIDATE_API,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({enabled:state.enabled,routes,combos,account_pools:accountPools})});
     saveStateEl.textContent='Saving…';
-    await requestManagementJSON(CONFIG_API,{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({enabled:state.enabled,priority:integerDraftValue(state.priority),routes,'model-routes':null})});
+    await requestManagementJSON(CONFIG_API,{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({enabled:state.enabled,priority:integerDraftValue(state.priority),routes,combos,account_pools:accountPools,'model-routes':null})});
     captureConfigurationBaseline(submittedSnapshot);
-    showToast('Model routes saved and CPA reload requested.','success');
+    saveStateEl.textContent='Saved';
+    showToast('Model configuration saved and CPA reload requested.','success');
   }catch(error){
     refreshDirty();
     if(state.dirty)saveStateEl.textContent='Save failed';
@@ -475,6 +494,8 @@ function initializeConfigurationEvents() {
   enabledEl.addEventListener('change',()=>{state.enabled=enabledEl.checked;refreshDirty()});
   priorityEl.addEventListener('input',()=>{state.priority=priorityEl.value;refreshDirty()});
   addRouteEl.addEventListener('click',addRoute);
+  combosEl.addEventListener('input',()=>{state.combosDraft=combosEl.value;refreshDirty()});
+  accountPoolsEl.addEventListener('input',()=>{state.accountPoolsDraft=accountPoolsEl.value;refreshDirty()});
   reloadEl.addEventListener('click',()=>{if(!state.dirty||window.confirm('Discard unsaved changes and reload from CPA?'))loadConfiguration()});
   saveEl.addEventListener('click',saveConfiguration);
 }

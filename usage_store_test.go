@@ -155,7 +155,7 @@ func TestUsageStoreDataPaths(t *testing.T) {
 			case "forward slashes":
 				config = []byte(fmt.Sprintf("data_path: %q\nroutes: []\n", filepath.ToSlash(wantPath)))
 			}
-			plugin, metadata, err := newModelRouterPlugin(config, nil)
+			plugin, metadata, err := newModelComboPlugin(config, nil)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -176,7 +176,7 @@ func TestUsageStoreDataPaths(t *testing.T) {
 			if kind, err := usageDatabaseKind(wantPath); err != nil || kind != usageDatabaseSQLite {
 				t.Fatalf("configured database kind = %s, %v, want SQLite", kind, err)
 			}
-			reopened, _, err := newModelRouterPlugin(config, nil)
+			reopened, _, err := newModelComboPlugin(config, nil)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -196,7 +196,7 @@ func TestUsageStorePersistsAndResetPreservesSettings(t *testing.T) {
 		t.Fatal(err)
 	}
 	now := time.Now().UTC().Add(-time.Minute)
-	plugin := &modelRouterPlugin{config: routerConfig{Enabled: true}, store: store, attribution: newAttributionTracker(func() time.Time { return now })}
+	plugin := &modelComboPlugin{config: routerConfig{Enabled: true}, store: store, attribution: newAttributionTracker(func() time.Time { return now })}
 	plugin.attribution.MarkRouted("auto", "gpt-5.4", mapHeader("Authorization", "Bearer raw-client-secret"))
 	plugin.HandleUsage(t.Context(), pluginapi.UsageRecord{
 		Provider: "openai", ExecutorType: "openai", Model: "gpt-5.4", APIKey: "raw-client-secret", AuthType: "api-key", Source: "raw-provider-secret", RequestedAt: now,
@@ -346,11 +346,9 @@ func TestHandleUsagePersistsAuthoritativeCPARecord(t *testing.T) {
 	}
 	defer store.Close()
 	now := time.Now().UTC()
-	plugin := &modelRouterPlugin{
-		config:      routerConfig{Enabled: true},
+	plugin := &modelComboPlugin{config: routerConfig{Enabled: true},
 		store:       store,
-		attribution: newAttributionTracker(func() time.Time { return now }),
-	}
+		attribution: newAttributionTracker(func() time.Time { return now })}
 	plugin.attribution.MarkRouted("smart", "provider/model", mapHeader("Authorization", "Bearer client-secret"))
 	plugin.HandleUsage(t.Context(), pluginapi.UsageRecord{
 		Provider: "openai-compatibility", ExecutorType: "OpenAICompatExecutor", Model: "provider/model", APIKey: "client-secret", RequestedAt: now,
@@ -376,7 +374,7 @@ func TestHandleUsageStoresAmbiguousRecordAsUnattributed(t *testing.T) {
 	tracker := newAttributionTracker(func() time.Time { return now })
 	tracker.MarkRouted("first", "provider/model", mapHeader("X-Api-Key", "client-secret"))
 	tracker.MarkRouted("second", "provider/model", mapHeader("X-Api-Key", "client-secret"))
-	plugin := &modelRouterPlugin{config: routerConfig{Enabled: true}, store: store, attribution: tracker}
+	plugin := &modelComboPlugin{config: routerConfig{Enabled: true}, store: store, attribution: tracker}
 	plugin.HandleUsage(t.Context(), pluginapi.UsageRecord{
 		Provider: "provider", Model: "provider/model", APIKey: "client-secret", Detail: pluginapi.UsageDetail{TotalTokens: 9}, Generate: true,
 	})

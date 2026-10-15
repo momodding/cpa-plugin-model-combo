@@ -139,6 +139,10 @@ input[type="text"], input[type="number"], input[type="password"], select {
   border: 1px solid var(--line-strong);
   border-radius: 7px;
 }
+.combo-editor { margin-top: 18px; padding: 16px; background: var(--surface-soft); border: 1px solid var(--line); border-radius: 10px; }
+.combo-editor label { display: block; margin-bottom: 8px; color: var(--ink); font-weight: 750; }
+.combo-editor textarea { width: 100%; min-height: 180px; padding: 10px; color: var(--ink); background: var(--input); border: 1px solid var(--line-strong); border-radius: 7px; font: 12px/1.45 "Cascadia Code", "SFMono-Regular", ui-monospace, monospace; resize: vertical; }
+.combo-editor p { margin: 8px 0 0; color: var(--muted); font-size: 12px; line-height: 1.45; }
 .field small { display: block; margin-top: 5px; color: var(--muted); font-size: 11px; line-height: 1.35; }
 .targets { margin-top: 17px; }
 .targets-head { display: flex; justify-content: space-between; gap: 12px; align-items: center; margin-bottom: 8px; }

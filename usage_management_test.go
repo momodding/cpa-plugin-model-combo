@@ -25,24 +25,24 @@ func TestUsageManagementOverviewRequestsPricesPreferencesAndReset(t *testing.T) 
 	}); err != nil {
 		t.Fatal(err)
 	}
-	plugin := &modelRouterPlugin{store: store, attribution: newAttributionTracker(nil)}
+	plugin := &modelComboPlugin{store: store, attribution: newAttributionTracker(nil)}
 	query := url.Values{"from": {now.Add(-time.Hour).Format(time.RFC3339)}, "to": {now.Add(time.Hour).Format(time.RFC3339)}}
 
-	overview := handleModelRouterManagement(plugin, pluginapi.ManagementRequest{Method: http.MethodGet, Path: modelRouterUsageBasePath + "/overview", Query: query})
+	overview := handleModelComboManagement(plugin, pluginapi.ManagementRequest{Method: http.MethodGet, Path: modelComboUsageBasePath + "/overview", Query: query})
 	if overview.StatusCode != http.StatusOK || !strings.Contains(string(overview.Body), `"router_models"`) || !strings.Contains(string(overview.Body), `"auto"`) {
 		t.Fatalf("overview = status %d body %s", overview.StatusCode, overview.Body)
 	}
-	requests := handleModelRouterManagement(plugin, pluginapi.ManagementRequest{Method: http.MethodGet, Path: modelRouterUsageBasePath + "/requests", Query: query})
+	requests := handleModelComboManagement(plugin, pluginapi.ManagementRequest{Method: http.MethodGet, Path: modelComboUsageBasePath + "/requests", Query: query})
 	if requests.StatusCode != http.StatusOK || !strings.Contains(string(requests.Body), `"provider_model":"gpt-5.4"`) {
 		t.Fatalf("requests = status %d body %s", requests.StatusCode, requests.Body)
 	}
 
 	priceBody := `{"revision":0,"prices":{"gpt-5.4":{"input":1,"output":2,"cache_read":0.5,"cache_creation":0.75,"accounting_mode":"input_includes_cache"}},"sync_settings":{"provider_priority":["openai"],"ignored_suffixes":["(high)"],"mappings":[]}}`
-	prices := handleModelRouterManagement(plugin, pluginapi.ManagementRequest{Method: http.MethodPut, Path: modelRouterUsageBasePath + "/prices", Body: []byte(priceBody)})
+	prices := handleModelComboManagement(plugin, pluginapi.ManagementRequest{Method: http.MethodPut, Path: modelComboUsageBasePath + "/prices", Body: []byte(priceBody)})
 	if prices.StatusCode != http.StatusOK || !strings.Contains(string(prices.Body), `"revision":1`) {
 		t.Fatalf("prices = status %d body %s", prices.StatusCode, prices.Body)
 	}
-	stale := handleModelRouterManagement(plugin, pluginapi.ManagementRequest{Method: http.MethodPut, Path: modelRouterUsageBasePath + "/prices", Body: []byte(priceBody)})
+	stale := handleModelComboManagement(plugin, pluginapi.ManagementRequest{Method: http.MethodPut, Path: modelComboUsageBasePath + "/prices", Body: []byte(priceBody)})
 	if stale.StatusCode != http.StatusConflict {
 		t.Fatalf("stale price status = %d body %s", stale.StatusCode, stale.Body)
 	}
@@ -50,11 +50,11 @@ func TestUsageManagementOverviewRequestsPricesPreferencesAndReset(t *testing.T) 
 	preferences := defaultDashboardPreferences()
 	preferences.RequestPageSize = 25
 	preferencesBody, _ := json.Marshal(preferences)
-	savedPreferences := handleModelRouterManagement(plugin, pluginapi.ManagementRequest{Method: http.MethodPut, Path: modelRouterUsageBasePath + "/preferences", Body: preferencesBody})
+	savedPreferences := handleModelComboManagement(plugin, pluginapi.ManagementRequest{Method: http.MethodPut, Path: modelComboUsageBasePath + "/preferences", Body: preferencesBody})
 	if savedPreferences.StatusCode != http.StatusOK || !strings.Contains(string(savedPreferences.Body), `"request_page_size":25`) {
 		t.Fatalf("preferences = status %d body %s", savedPreferences.StatusCode, savedPreferences.Body)
 	}
-	reset := handleModelRouterManagement(plugin, pluginapi.ManagementRequest{Method: http.MethodPost, Path: modelRouterUsageBasePath + "/reset", Body: []byte(`{"confirm":"reset"}`)})
+	reset := handleModelComboManagement(plugin, pluginapi.ManagementRequest{Method: http.MethodPost, Path: modelComboUsageBasePath + "/reset", Body: []byte(`{"confirm":"reset"}`)})
 	if reset.StatusCode != http.StatusOK {
 		t.Fatalf("reset = status %d body %s", reset.StatusCode, reset.Body)
 	}
@@ -67,13 +67,13 @@ func TestUsageManagementOverviewRequestsPricesPreferencesAndReset(t *testing.T) 
 
 func TestUsageManagementDashboardQueryOptions(t *testing.T) {
 	store, filter := usageQueryFixture(t)
-	plugin := &modelRouterPlugin{store: store}
+	plugin := &modelComboPlugin{store: store}
 	query := url.Values{
 		"from": {filter.From.Format(time.RFC3339Nano)}, "to": {filter.To.Format(time.RFC3339Nano)}, "granularity": {"minute"},
 		"source": {"GATEWAY"}, "group_dimension": {"router_model"}, "group_sort": {"key"}, "group_order": {"asc"}, "group_offset": {"1"}, "group_limit": {"3"},
 		"request_sort": {"cost"}, "request_order": {"asc"}, "request_offset": {"2"}, "request_limit": {"4"},
 	}
-	response := handleModelRouterManagement(plugin, pluginapi.ManagementRequest{Method: http.MethodGet, Path: modelRouterUsageBasePath + "/dashboard", Query: query})
+	response := handleModelComboManagement(plugin, pluginapi.ManagementRequest{Method: http.MethodGet, Path: modelComboUsageBasePath + "/dashboard", Query: query})
 	if response.StatusCode != http.StatusOK {
 		t.Fatalf("dashboard returned %d: %s", response.StatusCode, response.Body)
 	}
@@ -100,7 +100,7 @@ func TestUsageManagementDashboardQueryOptions(t *testing.T) {
 	if _, err := store.SavePriceBook(saveModelPricesRequest{Revision: dashboard.PriceBookRevision, Prices: map[string]modelPrice{"model-a": {tokenRates: tokenRates{Input: 10}}}}, time.Now().UTC()); err != nil {
 		t.Fatal(err)
 	}
-	response = handleModelRouterManagement(plugin, pluginapi.ManagementRequest{Method: http.MethodGet, Path: modelRouterUsageBasePath + "/dashboard", Query: query})
+	response = handleModelComboManagement(plugin, pluginapi.ManagementRequest{Method: http.MethodGet, Path: modelComboUsageBasePath + "/dashboard", Query: query})
 	if err := json.Unmarshal(response.Body, &dashboard); err != nil {
 		t.Fatal(err)
 	}
@@ -111,19 +111,19 @@ func TestUsageManagementDashboardQueryOptions(t *testing.T) {
 
 func TestUsageManagementDashboardRejectsInvalidOptions(t *testing.T) {
 	store, _ := usageQueryFixture(t)
-	plugin := &modelRouterPlugin{store: store}
+	plugin := &modelComboPlugin{store: store}
 	for _, test := range []struct{ key, value string }{
 		{"granularity", "week"}, {"from", "invalid"}, {"group_dimension", "api_key"}, {"group_sort", "time"}, {"group_order", "sideways"}, {"group_offset", "-1"}, {"group_limit", "501"},
 		{"request_sort", "requests"}, {"request_order", "sideways"}, {"request_offset", "-1"}, {"request_limit", "0"},
 	} {
 		t.Run(test.key, func(t *testing.T) {
-			response := handleModelRouterManagement(plugin, pluginapi.ManagementRequest{Method: http.MethodGet, Path: modelRouterUsageBasePath + "/dashboard", Query: url.Values{test.key: {test.value}}})
+			response := handleModelComboManagement(plugin, pluginapi.ManagementRequest{Method: http.MethodGet, Path: modelComboUsageBasePath + "/dashboard", Query: url.Values{test.key: {test.value}}})
 			if response.StatusCode != http.StatusBadRequest {
 				t.Fatalf("invalid option returned %d: %s", response.StatusCode, response.Body)
 			}
 		})
 	}
-	response := handleModelRouterManagement(plugin, pluginapi.ManagementRequest{Method: http.MethodPost, Path: modelRouterUsageBasePath + "/dashboard"})
+	response := handleModelComboManagement(plugin, pluginapi.ManagementRequest{Method: http.MethodPost, Path: modelComboUsageBasePath + "/dashboard"})
 	if response.StatusCode != http.StatusMethodNotAllowed {
 		t.Fatalf("unsupported method returned %d", response.StatusCode)
 	}
@@ -146,7 +146,7 @@ func TestUsageManagementNamespacesRouterAliasesAndAttribution(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	plugin := &modelRouterPlugin{store: store, attribution: newAttributionTracker(nil)}
+	plugin := &modelComboPlugin{store: store, attribution: newAttributionTracker(nil)}
 	baseQuery := func() url.Values {
 		return url.Values{"from": {now.Add(-time.Hour).Format(time.RFC3339)}, "to": {now.Add(time.Hour).Format(time.RFC3339)}}
 	}
@@ -165,7 +165,7 @@ func TestUsageManagementNamespacesRouterAliasesAndAttribution(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			query := baseQuery()
 			query.Set(test.parameter, test.value)
-			response := handleModelRouterManagement(plugin, pluginapi.ManagementRequest{Method: http.MethodGet, Path: modelRouterUsageBasePath + "/requests", Query: query})
+			response := handleModelComboManagement(plugin, pluginapi.ManagementRequest{Method: http.MethodGet, Path: modelComboUsageBasePath + "/requests", Query: query})
 			var page usageRequestPage
 			if err := json.Unmarshal(response.Body, &page); err != nil {
 				t.Fatal(err)
@@ -176,7 +176,7 @@ func TestUsageManagementNamespacesRouterAliasesAndAttribution(t *testing.T) {
 		})
 	}
 
-	overviewResponse := handleModelRouterManagement(plugin, pluginapi.ManagementRequest{Method: http.MethodGet, Path: modelRouterUsageBasePath + "/overview", Query: baseQuery()})
+	overviewResponse := handleModelComboManagement(plugin, pluginapi.ManagementRequest{Method: http.MethodGet, Path: modelComboUsageBasePath + "/overview", Query: baseQuery()})
 	var overview usageOverview
 	if err := json.Unmarshal(overviewResponse.Body, &overview); err != nil {
 		t.Fatal(err)
@@ -198,7 +198,7 @@ func TestUsageManagementNamespacesRouterAliasesAndAttribution(t *testing.T) {
 
 	groupQuery := baseQuery()
 	groupQuery.Set("dimension", "router_model")
-	groupsResponse := handleModelRouterManagement(plugin, pluginapi.ManagementRequest{Method: http.MethodGet, Path: modelRouterUsageBasePath + "/groups", Query: groupQuery})
+	groupsResponse := handleModelComboManagement(plugin, pluginapi.ManagementRequest{Method: http.MethodGet, Path: modelComboUsageBasePath + "/groups", Query: groupQuery})
 	var groups usageGroupPage
 	if err := json.Unmarshal(groupsResponse.Body, &groups); err != nil {
 		t.Fatal(err)
@@ -214,20 +214,20 @@ func TestUsageManagementRejectsBadQueriesBodiesAndMethods(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer store.Close()
-	plugin := &modelRouterPlugin{store: store, attribution: newAttributionTracker(nil)}
+	plugin := &modelComboPlugin{store: store, attribution: newAttributionTracker(nil)}
 	tests := []pluginapi.ManagementRequest{
-		{Method: http.MethodGet, Path: modelRouterUsageBasePath + "/overview", Query: url.Values{"from": {"bad"}}},
-		{Method: http.MethodGet, Path: modelRouterUsageBasePath + "/requests", Query: url.Values{"limit": {"501"}}},
-		{Method: http.MethodPut, Path: modelRouterUsageBasePath + "/preferences", Body: []byte(`{"request_page_size":100,"surprise":true}`)},
-		{Method: http.MethodPost, Path: modelRouterUsageBasePath + "/reset", Body: []byte(`{"confirm":"no"}`)},
+		{Method: http.MethodGet, Path: modelComboUsageBasePath + "/overview", Query: url.Values{"from": {"bad"}}},
+		{Method: http.MethodGet, Path: modelComboUsageBasePath + "/requests", Query: url.Values{"limit": {"501"}}},
+		{Method: http.MethodPut, Path: modelComboUsageBasePath + "/preferences", Body: []byte(`{"request_page_size":100,"surprise":true}`)},
+		{Method: http.MethodPost, Path: modelComboUsageBasePath + "/reset", Body: []byte(`{"confirm":"no"}`)},
 	}
 	for _, request := range tests {
-		response := handleModelRouterManagement(plugin, request)
+		response := handleModelComboManagement(plugin, request)
 		if response.StatusCode != http.StatusBadRequest {
 			t.Fatalf("request %#v status = %d body %s", request, response.StatusCode, response.Body)
 		}
 	}
-	response := handleModelRouterManagement(plugin, pluginapi.ManagementRequest{Method: http.MethodPost, Path: modelRouterUsageBasePath + "/overview"})
+	response := handleModelComboManagement(plugin, pluginapi.ManagementRequest{Method: http.MethodPost, Path: modelComboUsageBasePath + "/overview"})
 	if response.StatusCode != http.StatusMethodNotAllowed {
 		t.Fatalf("method status = %d body %s", response.StatusCode, response.Body)
 	}
@@ -248,17 +248,17 @@ func TestUsageOverviewListsResultsOutsideRequestPage(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	plugin := &modelRouterPlugin{store: store, attribution: newAttributionTracker(nil)}
+	plugin := &modelComboPlugin{store: store, attribution: newAttributionTracker(nil)}
 	query := url.Values{
 		"from":  {now.Add(-time.Hour).Format(time.RFC3339)},
 		"to":    {now.Add(time.Hour).Format(time.RFC3339)},
 		"limit": {"1"},
 	}
-	requests := handleModelRouterManagement(plugin, pluginapi.ManagementRequest{Method: http.MethodGet, Path: modelRouterUsageBasePath + "/requests", Query: query})
+	requests := handleModelComboManagement(plugin, pluginapi.ManagementRequest{Method: http.MethodGet, Path: modelComboUsageBasePath + "/requests", Query: query})
 	if !strings.Contains(string(requests.Body), `"result":"success"`) || strings.Contains(string(requests.Body), `"result":"http_429"`) {
 		t.Fatalf("first request page = %s", requests.Body)
 	}
-	overview := handleModelRouterManagement(plugin, pluginapi.ManagementRequest{Method: http.MethodGet, Path: modelRouterUsageBasePath + "/overview", Query: query})
+	overview := handleModelComboManagement(plugin, pluginapi.ManagementRequest{Method: http.MethodGet, Path: modelComboUsageBasePath + "/overview", Query: query})
 	var body struct {
 		Results []string `json:"results"`
 	}

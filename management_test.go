@@ -10,16 +10,16 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
 )
 
-func TestModelRouterABIAdvertisesConfigurationResource(t *testing.T) {
-	resetModelRouterABIState(t)
+func TestModelComboABIAdvertisesConfigurationResource(t *testing.T) {
+	resetModelComboABIState(t)
 	lifecycle, err := json.Marshal(lifecycleRequest{ConfigYAML: []byte("routes: []\n")})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := handleModelRouterABIMethod(t.Context(), pluginabi.MethodPluginRegister, lifecycle); err != nil {
+	if _, err := handleModelComboABIMethod(t.Context(), pluginabi.MethodPluginRegister, lifecycle); err != nil {
 		t.Fatalf("plugin.register error = %v", err)
 	}
-	raw, err := handleModelRouterABIMethod(t.Context(), pluginabi.MethodManagementRegister, nil)
+	raw, err := handleModelComboABIMethod(t.Context(), pluginabi.MethodManagementRegister, nil)
 	if err != nil {
 		t.Fatalf("management.register error = %v", err)
 	}
@@ -31,21 +31,21 @@ func TestModelRouterABIAdvertisesConfigurationResource(t *testing.T) {
 	if err := json.Unmarshal(envelope.Result, &management); err != nil {
 		t.Fatalf("decode management result: %v", err)
 	}
-	if len(management.Resources) != 1 || management.Resources[0].Path != "/config" || management.Resources[0].Menu != "Model Router" {
+	if len(management.Resources) != 1 || management.Resources[0].Path != "/config" || management.Resources[0].Menu != "Model Combo" {
 		t.Fatalf("resources = %#v", management.Resources)
 	}
 	wantedRoutes := map[string]bool{
-		http.MethodPost + " /plugins/model-router/validate":          false,
-		http.MethodGet + " /plugins/model-router/usage/dashboard":    false,
-		http.MethodGet + " /plugins/model-router/usage/overview":     false,
-		http.MethodGet + " /plugins/model-router/usage/groups":       false,
-		http.MethodGet + " /plugins/model-router/usage/requests":     false,
-		http.MethodGet + " /plugins/model-router/usage/prices":       false,
-		http.MethodPut + " /plugins/model-router/usage/prices":       false,
-		http.MethodPost + " /plugins/model-router/usage/prices/sync": false,
-		http.MethodGet + " /plugins/model-router/usage/preferences":  false,
-		http.MethodPut + " /plugins/model-router/usage/preferences":  false,
-		http.MethodPost + " /plugins/model-router/usage/reset":       false,
+		http.MethodPost + " /plugins/model-combo/validate":          false,
+		http.MethodGet + " /plugins/model-combo/usage/dashboard":    false,
+		http.MethodGet + " /plugins/model-combo/usage/overview":     false,
+		http.MethodGet + " /plugins/model-combo/usage/groups":       false,
+		http.MethodGet + " /plugins/model-combo/usage/requests":     false,
+		http.MethodGet + " /plugins/model-combo/usage/prices":       false,
+		http.MethodPut + " /plugins/model-combo/usage/prices":       false,
+		http.MethodPost + " /plugins/model-combo/usage/prices/sync": false,
+		http.MethodGet + " /plugins/model-combo/usage/preferences":  false,
+		http.MethodPut + " /plugins/model-combo/usage/preferences":  false,
+		http.MethodPost + " /plugins/model-combo/usage/reset":       false,
 	}
 	for _, route := range management.Routes {
 		key := route.Method + " " + route.Path
@@ -60,15 +60,15 @@ func TestModelRouterABIAdvertisesConfigurationResource(t *testing.T) {
 	}
 }
 
-func TestModelRouterManagementDashboardReusesCPAMCSessionAndTheme(t *testing.T) {
+func TestModelComboManagementDashboardReusesCPAMCSessionAndTheme(t *testing.T) {
 	request, err := json.Marshal(managementRPCRequest{ManagementRequest: pluginapi.ManagementRequest{
 		Method: http.MethodGet,
-		Path:   modelRouterDashboardPath,
+		Path:   modelComboDashboardPath,
 	}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	raw, err := handleModelRouterABIMethod(t.Context(), pluginabi.MethodManagementHandle, request)
+	raw, err := handleModelComboABIMethod(t.Context(), pluginabi.MethodManagementHandle, request)
 	if err != nil {
 		t.Fatalf("management.handle error = %v", err)
 	}
@@ -85,9 +85,9 @@ func TestModelRouterManagementDashboardReusesCPAMCSessionAndTheme(t *testing.T) 
 	}
 	page := string(response.Body)
 	for _, required := range []string{
-		"<title>Model Router</title>",
-		"/v0/management/plugins/model-router/config",
-		"/v0/management/plugins/model-router/validate",
+		"<title>Model Combo</title>",
+		"/v0/management/plugins/model-combo/config",
+		"/v0/management/plugins/model-combo/validate",
 		"/v0/management/api-keys",
 		"/v1/models",
 		"headers.Authorization='Bearer '+key",
@@ -102,7 +102,7 @@ func TestModelRouterManagementDashboardReusesCPAMCSessionAndTheme(t *testing.T) 
 		"data-target-help",
 		"model+' (unavailable)'",
 		"data-action=\"add-target\"",
-		"role=\"tablist\" aria-label=\"Model Router sections\"",
+		"role=\"tablist\" aria-label=\"Model Combo sections\"",
 		"id=\"configuration-tab\" class=\"page-tab\" type=\"button\" role=\"tab\" aria-selected=\"true\"",
 		"id=\"usage-tab\" class=\"page-tab\" type=\"button\" role=\"tab\" aria-selected=\"false\"",
 		"id=\"configuration-panel\" class=\"tab-panel\" role=\"tabpanel\"",
@@ -124,7 +124,7 @@ func TestModelRouterManagementDashboardReusesCPAMCSessionAndTheme(t *testing.T) 
 		".configuration-actions-dock { transform: none !important; }",
 		"configurationActionsResizeObserver=new ResizeObserver(updateConfigurationActionsClearance)",
 		"id=\"usage-panel\" class=\"tab-panel usage-panel\" role=\"tabpanel\"",
-		"/v0/management/plugins/model-router/usage",
+		"/v0/management/plugins/model-combo/usage",
 		"requestManagementJSON(USAGE_API+'/dashboard?'",
 		"requestManagementJSON(USAGE_API+'/overview?'",
 		"requestManagementJSON(USAGE_API+'/groups?'",
@@ -210,7 +210,7 @@ func TestModelRouterManagementDashboardReusesCPAMCSessionAndTheme(t *testing.T) 
 	}
 }
 
-func TestModelRouterManagementValidationUsesPluginParser(t *testing.T) {
+func TestModelComboManagementValidationUsesPluginParser(t *testing.T) {
 	tests := []struct {
 		name       string
 		body       string
@@ -262,9 +262,9 @@ func TestModelRouterManagementValidationUsesPluginParser(t *testing.T) {
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			response := handleModelRouterManagement(nil, pluginapi.ManagementRequest{
+			response := handleModelComboManagement(nil, pluginapi.ManagementRequest{
 				Method: http.MethodPost,
-				Path:   modelRouterValidationPath,
+				Path:   modelComboValidationPath,
 				Body:   []byte(test.body),
 			})
 			if response.StatusCode != test.wantStatus || !strings.Contains(string(response.Body), test.wantText) {
@@ -274,9 +274,25 @@ func TestModelRouterManagementValidationUsesPluginParser(t *testing.T) {
 	}
 }
 
-func TestModelRouterManagementRejectsUnsupportedMethod(t *testing.T) {
-	response := handleModelRouterManagement(nil, pluginapi.ManagementRequest{Method: http.MethodDelete, Path: modelRouterDashboardPath})
+func TestModelComboManagementRejectsUnsupportedMethod(t *testing.T) {
+	response := handleModelComboManagement(nil, pluginapi.ManagementRequest{Method: http.MethodDelete, Path: modelComboDashboardPath})
 	if response.StatusCode != http.StatusMethodNotAllowed || !strings.Contains(string(response.Body), "method_not_allowed") {
 		t.Fatalf("response = %#v, body=%s", response, response.Body)
+	}
+}
+
+func TestValidateModelComboManagementConfigAcceptsAccountPools(t *testing.T) {
+	response := validateModelComboManagementConfig([]byte(`{
+		"enabled": true,
+		"combos": [{
+			"alias": "combo",
+			"groups": [{"name": "primary", "targets": [{"model": "provider/model", "account_pool": "pool"}]}]
+		}],
+		"account_pools": {
+			"pool": {"accounts": [{"key": "account", "auth_name": "account.json", "provider": "provider"}]}
+		}
+	}`))
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", response.StatusCode, response.Body)
 	}
 }

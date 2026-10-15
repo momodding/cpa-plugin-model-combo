@@ -7,11 +7,11 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
 )
 
-func (p *modelRouterPlugin) RouteModel(_ context.Context, request pluginapi.ModelRouteRequest) (pluginapi.ModelRouteResponse, error) {
+func (p *modelComboPlugin) RouteModel(_ context.Context, request pluginapi.ModelRouteRequest) (pluginapi.ModelRouteResponse, error) {
 	if p == nil || !p.config.Enabled {
 		return pluginapi.ModelRouteResponse{Handled: false}, nil
 	}
-	if _, ok := p.matchingRoute(request.RequestedModel); !ok {
+	if _, ok := lookupCombo(p.plans, request.RequestedModel); !ok {
 		return pluginapi.ModelRouteResponse{Handled: false}, nil
 	}
 	return pluginapi.ModelRouteResponse{
@@ -21,33 +21,30 @@ func (p *modelRouterPlugin) RouteModel(_ context.Context, request pluginapi.Mode
 	}, nil
 }
 
-func (p *modelRouterPlugin) RegisterModels(_ context.Context, _ pluginapi.ModelRegistrationRequest) (pluginapi.ModelRegistrationResponse, error) {
+func (p *modelComboPlugin) RegisterModels(_ context.Context, _ pluginapi.ModelRegistrationRequest) (pluginapi.ModelRegistrationResponse, error) {
 	response := pluginapi.ModelRegistrationResponse{Provider: pluginID}
 	if p == nil || !p.config.Enabled {
 		return response, nil
 	}
-	response.Models = make([]pluginapi.ModelInfo, 0, len(p.config.Routes))
-	for _, route := range p.config.Routes {
-		alias := strings.TrimSpace(route.Alias)
+	response.Models = make([]pluginapi.ModelInfo, 0, len(p.plans))
+	for _, plan := range p.plans {
+		alias := strings.TrimSpace(plan.alias)
 		response.Models = append(response.Models, pluginapi.ModelInfo{
 			ID:          alias,
 			Object:      "model",
 			OwnedBy:     pluginID,
 			DisplayName: alias,
 			Name:        alias,
-			Description: "CLIProxyAPI logical model route (" + route.Strategy + ")",
+			Description: "CLIProxyAPI logical model combo",
 			UserDefined: true,
 		})
 	}
 	return response, nil
 }
 
-func (p *modelRouterPlugin) matchingRoute(requestedModel string) (modelRoute, bool) {
-	requestedBase, _, _ := splitThinkingSuffix(requestedModel)
-	for _, route := range p.config.Routes {
-		if strings.EqualFold(route.Alias, requestedBase) {
-			return route, true
-		}
+func (p *modelComboPlugin) matchingCombo(requestedModel string) (comboPlan, bool) {
+	if p == nil {
+		return comboPlan{}, false
 	}
-	return modelRoute{}, false
+	return lookupCombo(p.plans, requestedModel)
 }

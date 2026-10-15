@@ -1,328 +1,112 @@
-# CPA Model Router
+# CPA Model Combo
 
-[![test](https://github.com/markhuangai/cpa-plugin-model-router/actions/workflows/test.yml/badge.svg)](https://github.com/markhuangai/cpa-plugin-model-router/actions/workflows/test.yml)
-[![release](https://github.com/markhuangai/cpa-plugin-model-router/actions/workflows/release.yml/badge.svg)](https://github.com/markhuangai/cpa-plugin-model-router/actions/workflows/release.yml)
-[![license](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![test](https://github.com/momodding/cpa-model-combo/actions/workflows/test.yml/badge.svg)](https://github.com/momodding/cpa-model-combo/actions/workflows/test.yml)
+[![release](https://github.com/momodding/cpa-model-combo/actions/workflows/release.yml/badge.svg)](https://github.com/momodding/cpa-model-combo/actions/workflows/release.yml)
 
-CPA Model Router is a native [CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI) model-router and executor plugin. It ports the configured model alias, priority routing, round-robin routing, cooldown, and failover behavior from `Z-M-Huang/CLIProxyAPI` into a standalone plugin for upstream CPA.
+Model Combo is native [CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI) plugin. It exposes client aliases, selects configured physical CPA models, and invokes CPA host model executor. CPA retains provider transport, credentials, account selection, protocol translation, proxying, and request logging.
 
-The plugin does not call providers directly. For each selected physical model it calls CPA's host model executor, so CPA keeps control of provider credentials, protocol translation, proxy policy, request logging, and usage capture.
+## Install
 
-## Features
-
-- Expose logical model aliases through CPA's model registry.
-- Route an alias to an ordered priority pool or a round-robin pool.
-- Assign round-robin weights to give models with multiple CPA providers a proportional outer share.
-- Fail over on quota, rate-limit, auth, provider, server, and recognized transport failures.
-- Cool failed targets in memory and skip them on later requests.
-- Preserve a requested thinking suffix unless a target defines its own suffix.
-- Rewrite non-streaming and streaming response model fields back to the requested alias.
-- Retry a stream only before the first upstream payload is received.
-- Preserve unchanged cooldown and round-robin state when CPA reconfigures the plugin.
-- Configure ordered routes and target pools through a dedicated CPA management page.
-- Track routed attempts and direct provider requests with separate router-model and provider-model identities.
-- Persist request usage, minute aggregates, USD model prices, and dashboard preferences in a dedicated SQLite database with WAL enabled.
-- Review tokens, estimated cost, latency, TTFT, throughput, failures, and pricing coverage without replacing visible data during refreshes.
-
-## Compatibility
-
-The module is built against `github.com/router-for-me/CLIProxyAPI/v7` v7.3.9 and requires CPA v7.3.9 or newer. That release preserves numeric HTTP statuses returned through native host callbacks so configured fallback rules can classify upstream errors correctly. CPA v7.2.143 introduced asynchronous native `usage_plugin` callbacks that survive request completion; older hosts can silently omit usage records. The plugin negotiates RPC schema v2 with older compatible hosts and schema v3 when offered; schema v3 avoids resending the full request body with every streaming response chunk. The CPA host must support native plugins, `model_router`, `executor`, `model_registrar`, request interception, `usage_plugin`, and the `host.model.*` callback methods. The configuration and usage page also requires CPA's `management_api` capability and plugin resource menus.
-
-Build the plugin for the same operating system and architecture as CPA. A Go `c-shared` library is not portable across OS or CPU targets.
-
-## Configuration
+Build matching host OS/architecture, then copy `model-combo.so`, `model-combo.dylib`, or `model-combo.dll` into `plugins.dir`.
 
 ```yaml
 plugins:
   enabled: true
-  dir: "/absolute/path/to/plugins"
+  dir: plugins
   configs:
-    model-router:
+    model-combo:
       enabled: true
       priority: 100
-      data_path: "/CLIProxyAPI/plugins/model-router.db"
+      data_path: ./data/model-combo-usage.db
       retention_days: 365
-      routes:
-        - alias: auto
-          strategy: priority
-          cooldown_seconds: 60
-          targets:
-            - model: gpt-5.4-mini
-              weight: 1
-            - model: claude-sonnet-4-5
-              weight: 1
-            - model: gemini-2.5-pro(8192)
-              weight: 1
-
-        - alias: balanced
-          strategy: round-robin
-          cooldown_seconds: 30
-          targets:
-            - model: provider-a/model
-              weight: 3
-            - model: provider-b/model
-              weight: 1
+      resilience:
+        max_attempts: 4
+        deadline_ms: 120000
+        base_backoff_ms: 100
+        max_backoff_ms: 2000
+        honor_retry_after: true
+        circuit_failure_threshold: 3
+        circuit_open_seconds: 60
+        circuit_max_open_seconds: 900
+      combos:
+        - alias: high-reasoning
+          capability_policy: compatible-if-known
+          groups:
+            - name: premium
+              strategy: priority
+              cooldown_seconds: 60
+              targets:
+                - model: provider-a/reasoning-large
+                  capabilities: [reasoning, tools]
+                - model: provider-b/reasoning-large
+                  capabilities: [reasoning, tools]
+            - name: standard
+              strategy: weighted-round-robin
+              targets:
+                - model: provider-c/reasoning-medium
+                  weight: 2
+                  capabilities: [reasoning, tools]
+                - model: provider-d/reasoning-medium
+                  weight: 1
+                  capabilities: [reasoning]
 ```
 
-`plugins.enabled` and `plugins.configs.model-router.enabled` must both be true. The library basename must be exactly `model-router` with the host extension: `.so`, `.dylib`, or `.dll`.
+Example model IDs are illustrative. Replace with exact IDs from CPA `/v1/models`.
 
-Only two usage-storage settings are supported:
+## Routing contract
 
-| Field | Default | Meaning |
-| --- | --- | --- |
-| `data_path` | CPA `plugins/model-router.db` | Dedicated SQLite database path. Explicit relative paths resolve from the CPA process working directory. |
-| `retention_days` | `365` | UTC days of request details and aggregates to retain, from 1 through 3650. |
+- Group order is fallback order. `priority`, `round-robin`, and smooth `weighted-round-robin` have independent state per combo/group.
+- One candidate is attempted once per request. `max_attempts` covers every group.
+- Capability declarations distinguish omission from `capabilities: []`: omission is unknown and remains eligible under `compatible-if-known`; explicit empty declares no capability support and is skipped for capability-required requests.
+- `capability_policy: compatible-if-known` is default for compatibility. Set `require-declared` to skip capability-required requests unless target explicitly declares every required capability.
+- CPA receives original request unchanged except top-level physical `model`; tool calls, reasoning fields, headers, query, and protocol remain CPA-owned. Successful response model fields return requested alias.
+- Fallback occurs only before first payload successfully emits to client stream. Committed stream never splices providers.
+- `deadline_ms` is inter-attempt orchestration budget. Pinned CPA v7.3.9 callback cannot cancel blocked in-flight host execution; CPA/provider timeouts control it.
+- Native plugins are trusted in-process code. Never load unverified libraries. Plugin does not store provider credentials, prompts, request bodies, API keys, or raw session identifiers.
 
-`data_path` accepts filesystem paths, not `file://` URIs. On Windows, use a relative path such as `plugins/model-router.db`, an absolute path such as `D:/CLIProxyAPI/plugins/model-router.db`, or a single-quoted YAML path such as `'D:\CLIProxyAPI\plugins\model-router.db'`. Relative paths resolve from the CPA process working directory; do not add a slash before a Windows drive letter.
+`fallback.no_fallback_on_status` overrides `fallback_on_status`. Default fallback statuses are `401,402,403,404,408,429,500,502,503,504`. Ordinary request `400` errors are terminal unless structured upstream data identifies explicit context or capability incompatibility.
 
-When `data_path` is omitted, the plugin locates the CPA root from the loaded library, then the CPA executable, then the current working directory. It stores the database at `<CPA root>/plugins/model-router.db`; outside a detected CPA layout it uses `<working directory>/plugins/model-router.db`. The plugins directory must be writable and persistently mounted. Use an explicit absolute `data_path` when the plugin directory is read-only or stored on a disposable container layer.
+## Legacy configuration and coexistence
 
-Version 0.4.0 opens the configured path as SQLite in WAL mode. When that path contains a v0.3.x bbolt database, the first v0.4.0 open performs a one-time, integrity-checked migration and retains the original file as `<data_path>.bbolt-v1.bak`. The migration marker and temporary file make an interrupted copy recoverable; a changed or corrupt source is rejected rather than overwritten. The former omitted-path default at `<CPA root>/data/model-router-usage.db` is not discovered automatically, so set that path explicitly when its history must remain active.
+`routes` and `model-routes` remain accepted. Each route normalizes to one combo with group `default`; `models` remains legacy shorthand for `targets`. Do not set both `routes` and `model-routes`. `routes` may coexist with `combos` only when aliases are unique.
 
-Version 0.4.2 keeps configuration actions out of the way until the draft differs from the loaded CPA configuration. Version 0.4.1 added weighted ordered targets for round-robin routes; the weight is a manual outer-routing share, and CPA still selects the credential behind the chosen model.
+Migration:
 
-Every usage record received by the plugin is committed synchronously. On supported CPA versions, asynchronous native usage delivery survives request completion. Usage history, prices, and dashboard preferences therefore survive a normal CPA restart when the same database file remains mounted and writable. WAL allows an old and a new plugin generation to overlap while CPA hot-loads a compatible update. Retention deletes expired rows; SQLite may retain reusable pages, so high-volume installations should monitor the database file and choose retention based on request rate and available storage.
+1. Install `model-combo` beside original `model-router`.
+2. Copy old config unchanged beneath `plugins.configs.model-combo`.
+3. Disable original router or ensure aliases are disjoint.
+4. Verify `/v1/models` and Model Combo management page; convert legacy routes to canonical combos when ready.
+5. Roll back by disabling Model Combo and re-enabling untouched original router. Default databases are distinct.
 
-### Updating from v0.3.x
+Do not enable same alias in both plugins. CPA router priority makes ownership order-dependent. Model Combo never reads or writes original router configuration.
 
-The bbolt-to-SQLite transition is the only controlled interruption required by this plugin. Keep CPA running, stop new requests, and use CPA's plugin management update flow to unload and replace the loaded `model-router` library once. Do not delete `model-router.db`; it is the migration source. After the new library registers, verify that `<data_path>.bbolt-v1.bak` exists and that the Usage tracking page still shows the previous history. Future v0.4.x updates use SQLite WAL and can hot-load while generations overlap.
+Management resource: `/v0/resource/plugins/model-combo/config`. CPA owns management authentication.
 
-If migration reports a source-digest, corruption, or registration error, leave the marker and backup files in place and restore the previous artifact. The exact rollback is:
+## Dashboard configuration
 
-```bash
-cp -- "<data_path>.bbolt-v1.bak" "<data_path>"
-rm -f -- "<data_path>.migration-v1.json" "<data_path>.sqlite-v1.migrating"
-```
+Configuration page keeps legacy route editor for `routes`: alias, `priority` or `round-robin`, cooldown, and weighted targets. Use **Advanced Combo definitions** JSON editor for canonical `combos`, including ordered `groups`, `weighted-round-robin`, `capability_policy`, and target `capabilities`.
 
-Only run that rollback while the `model-router` plugin is unloaded. The backup is a copy of the original bbolt file; never overwrite it with an unverified database.
+Editor loads and saves `combos` unchanged as JSON. It validates JSON syntax and requires an array before saving; empty editor saves `combos: []`. Route and combo aliases must remain unique. CPA management authentication still applies.
 
-### Configuration UI
-
-The plugin registers a **Model Router** page in CPA's management frontend. Open the Plugins section and select **Model Router**. The centered **Configuration** and **Usage tracking** tabs appear above the route controls; Configuration is selected by default. When CPAMC has a persisted authenticated session, the page reuses its management key and loads configuration automatically. It also follows CPAMC's selected light, white, or dark theme and updates when that selection changes. The Configuration tab provides typed controls for route order, aliases, priority or round-robin strategy, cooldowns, ordered target pools, and round-robin weights. Target dropdowns are populated with the model IDs currently returned by CPA's `/v1/models` endpoint.
-
-Model discovery uses the management session to read CPA's configured client API keys, then keeps the first non-empty key in browser memory only while requesting `/v1/models`. The client key is not rendered or stored. If no client key is configured, the page attempts the model request without authorization for CPA installations without frontend authentication. Existing targets that are absent from the live catalog remain visible as disabled `<model> (unavailable)` choices until they are replaced, so loading the page never changes saved routes. New UI targets must be selected from the live catalog; custom or suffixed targets can still be managed through YAML or the Management API.
-
-The fixed **Save changes** and **Discard and reload** dock slides into view only while the current draft differs from the last configuration loaded or saved through CPA. Reverting every edit hides it again; invalid numeric drafts keep it visible so validation feedback and discard remain available. The dock reserves enough page space to avoid covering the final route and moves notifications above itself.
-
-**Save changes** checks duplicate aliases, recursive routes, empty pools, duplicate targets, and cooldown values with the plugin's Go configuration parser before applying a shallow patch through CPA. The patch updates `enabled`, `priority`, and `routes` without replacing plugin-store metadata or unrelated config fields. The same page is available directly at:
-
-```text
-/v0/resource/plugins/model-router/config
-```
-
-The dashboard's shared, Configuration, and Usage tracking source lives under dashboard/; Go embeds these files in the plugin and assembles one HTML response when the plugin starts. CPA exposes that page as a public plugin resource so it can embed it in the frontend. Reading or changing configuration still requires the management key. The page reads CPAMC's persisted `cli-proxy-auth` value from same-origin browser storage; it does not change CPAMC's stored session. If **Remember password** is disabled, the persisted session has no key, so the page reveals a fallback key field. A fallback key is cached only in that tab's session storage and is removed when CPA rejects it. CPA's Management API must be enabled and reachable from the browser.
-
-### Usage tracking
-
-Usage tracking stores one row for each CPA usage record delivered for a physical routed attempt, including failed attempts before failover, and for each delivered direct-provider record. A routed row keeps the client-visible router alias in `router_model` and the physical CPA target in `provider_model`; direct rows have no router alias. This separation is used consistently in filters, summaries, grouped results, and request details.
-
-The dashboard provides preset or custom time ranges, minute/hour/day trends, router/provider/source/tier/result filters, USD cost estimates, configurable columns, server-side sorting and pagination, and model pricing with optional models.dev synchronization. Both usage tables start at 50 rows, and Router model joins Provider, Source, Service tier, and Result in the hidden Usage breakdown defaults; existing saved column and page-size preferences remain authoritative. Token trends use packet columns, cost and efficiency use halo lines, and provider share uses a gapped donut. Every chart has stronger pointer and keyboard hover/focus states while preserving the existing tooltips and filter actions. Manual prices take precedence over synchronized catalog prices, and the pricing dialog closes after a successful save. Pricing units are USD per one million tokens; context tiers, service tiers, and cache accounting modes are supported.
-
-Refreshes keep the previous dashboard visible while three fenced requests load in parallel. Starting a newer refresh aborts the older one, and only the newest generation may update the page. Automatic refresh runs every 15 seconds only while Usage tracking is selected and the document is visible. Reset deletes request history and aggregates but preserves prices and dashboard preferences.
-
-The plugin persists CPA's normalized `usage_plugin` record as its sole usage source. CPA supplies token counters, cache-read and cache-creation counters, timing, provider metadata, and failure state; the plugin only correlates the record to a routed or direct marker, persists it, and applies its local pricing and aggregation. CPA v7.2.142 and older can lose these callbacks and are not supported; the plugin does not recreate missing records from response bodies.
-
-See [docs/usage-tracking.md](docs/usage-tracking.md) for the data contract, operational guidance, API routes, and implementation map.
-
-### Route fields
-
-| Field | Required | Meaning |
-| --- | --- | --- |
-| `alias` | yes | Client-visible model name. Matching is case-insensitive. Thinking suffixes are not allowed on aliases. |
-| `strategy` | no | `priority` by default, or `round-robin`. |
-| `cooldown_seconds` | no | Seconds a failed target remains unavailable. Omitted or zero uses 60 seconds. |
-| `targets` | yes | Ordered physical model target objects. Each object has a required `model` and an integer `weight` from 1 through 1000000; omitted weight defaults to 1. Empty and duplicate targets are rejected. |
-| `models` | legacy | Legacy ordered string targets. Each target is normalized to weight 1; do not provide it together with `targets`. |
-
-A route target cannot reference any configured route alias, including through a thinking suffix. This prevents recursive routes.
-
-### Selection and failover
-
-`priority` selects the first target that is not cooling down and ignores weights. `round-robin` advances through consecutive virtual slots according to each target's weight and skips all slots for targets that are cooling down. For example, weights `3:1` produce `A,A,A,B`; CPA then selects the actual credential configured behind each selected model.
-
-The plugin fails over for these numeric statuses:
-
-- `401`, `402`, `403`, `408`, `429`
-- `404`, except request-scoped persisted-item misses such as `store=false`
-- all `5xx` statuses
-
-`400` and `422` are treated as request errors and returned immediately. Cancellation and deadline errors never fail over. When the host callback loses a numeric status, the plugin fails over only for recognized quota, auth-unavailable, model/provider-unavailable, timeout, DNS, connection, broken-pipe, reset, or EOF messages. Ambiguous errors stop the route to avoid repeating a bad request against every provider.
-
-A stream can move to the next target only when start-up fails before any payload bytes arrive. A failure after payload arrival cools the target but is returned to the client without splicing a second provider stream into the first.
-
-### Thinking suffixes
-
-If a client asks for `auto(high)` and the selected target is `gpt-5.4-mini`, CPA executes `gpt-5.4-mini(high)`. If the selected target is already `gemini-2.5-pro(8192)`, the target suffix wins.
-
-Successful response fields such as `model`, `modelVersion`, `response.model`, and `message.model` are rewritten to the exact requested alias, including its suffix.
-
-## Migrating From The Fork Configuration
-
-Move the old top-level list under the plugin config and rename the canonical cooldown field from a hyphen to an underscore.
-
-```yaml
-# Before: Z-M-Huang/CLIProxyAPI fork
-model-routes:
-  - alias: auto
-    strategy: priority
-    cooldown-seconds: 60
-    models:
-      - gpt-5.4-mini
-      - claude-sonnet-4-5
-```
-
-```yaml
-# After: upstream CPA plus this plugin
-plugins:
-  enabled: true
-  dir: "plugins"
-  configs:
-    model-router:
-      enabled: true
-      routes:
-        - alias: auto
-          strategy: priority
-          cooldown_seconds: 60
-          targets:
-            - model: gpt-5.4-mini
-              weight: 1
-            - model: claude-sonnet-4-5
-              weight: 1
-```
-
-For staged migration, the plugin accepts `model-routes` instead of `routes` and `cooldown-seconds` instead of `cooldown_seconds` inside its config. Do not provide both forms of either field; registration fails rather than choosing one silently.
-
-The fork-specific `/v0/management/model-routes` endpoints are not part of this plugin. The configuration page uses CPA's generic plugin endpoints, which remain available for automation:
-
-```text
-GET   /v0/management/plugins/model-router/config
-PUT   /v0/management/plugins/model-router/config
-PATCH /v0/management/plugins/model-router/config
-PATCH /v0/management/plugins/model-router/enabled
-```
-
-## Build And Test
-
-Go 1.26 and a working C compiler are required.
+## Build and verify
 
 ```bash
 make check
 make build
+CPA_SOURCE=../CLIProxyAPI go test -tags=integration ./... -count=1
 ```
 
-`make build` writes the host-platform library to `dist/model-router.<ext>`. The default suite covers strict config parsing, priority and round-robin state, reconfiguration, failure classification, header sanitization, model rewriting, non-stream failover, stream boundaries, CPA usage attribution, persistence, pricing, management endpoints, the management page, and native RPC registration.
+Release workflow packages Linux (`amd64`, `arm64`), macOS (`amd64`, `arm64`), and Windows (`amd64`) archives. Each `model-combo_<version>_<goos>_<goarch>.zip` contains exactly root `model-combo.<ext>`; release also includes `checksums.txt` for all five archives.
 
-Run the opt-in black-box test against a local CPA source checkout:
+## Documentation
 
-```bash
-CPA_SOURCE=../CLIProxyAPI \
-  go test -tags=integration ./... -count=1 -v
-```
-
-The black-box test builds CPA and the native plugin in a temporary directory, starts logical providers on a local mock OpenAI-compatible server, loads the library through CPA, and verifies all of the following without real provider credentials. Public CI runs it against the minimum supported CPA v7.3.9 commit:
-
-- the logical alias appears in `/v1/models`;
-- the Model Router menu and parser-backed validation endpoint are available;
-- a `429` from the first target fails over to the second target;
-- the client sees the requested alias in the response;
-- the failed target remains on cooldown for the next request;
-- routed and direct streaming and non-streaming requests remain distinct, and every usage callback delivered by CPA is persisted once;
-- cache-creation counters delivered by CPA remain nonzero in the stored request and cost breakdown when the provider reports them;
-- usage history, model prices, and dashboard preferences survive a CPA restart.
-
-The test currently runs on Linux and macOS.
-
-The browser E2E test exercises the dashboard against a disposable local CPA instance. It changes route configuration, pricing, and dashboard preferences, then resets usage history, so do not point it at a shared or production instance. Install its pinned browser dependency with `npm ci`, then run:
-
-```bash
-DASHBOARD_URL=http://127.0.0.1:8317/v0/resource/plugins/model-router/config \
-DASHBOARD_MANAGEMENT_KEY='replace-with-disposable-instance-key' \
-DASHBOARD_E2E_ALLOW_MUTATIONS=1 \
-npm run test:e2e
-```
-
-Set `PLAYWRIGHT_CHROMIUM_EXECUTABLE` when Chromium is not available at `/usr/bin/google-chrome`.
-
-### Manual local installation
-
-1. Run `make build` on the CPA host machine.
-2. Copy `dist/model-router.so` on Linux, `dist/model-router.dylib` on macOS, or `dist/model-router.dll` on Windows into the configured `plugins.dir`. CPA also scans `plugins.dir/<goos>/<goarch>`.
-3. Add `plugins.configs.model-router.enabled: true`. Add routes in YAML or through the Model Router management page. Every target model must already be routable by CPA.
-4. Start CPA with `go run ./cmd/server --config /path/to/config.yaml` or your normal CPA binary.
-5. Verify that the alias is listed:
-
-```bash
-curl -fsS http://127.0.0.1:8317/v1/models \
-  -H "Authorization: Bearer $CPA_API_KEY" \
-  | jq '.data[] | select(.id == "auto")'
-```
-
-6. If the Management API is enabled, verify plugin registration:
-
-```bash
-curl -fsS http://127.0.0.1:8317/v0/management/plugins \
-  -H "Authorization: Bearer $MANAGEMENT_PASSWORD" \
-  | jq '.plugins[] | select(.id == "model-router")'
-```
-
-`registered`, `enabled`, and `effective_enabled` should all be true. A copied library is trusted in-process code; only load artifacts you built or verified.
-
-## Current ABI Limits
-
-- Routed token-count requests return HTTP `501` with code `model_route_count_tokens_unsupported`. The current host callback contract exposes model execution but not routed token counting. Returning an explicit error avoids reporting a false zero.
-- Host execution errors do not expose the upstream `Retry-After` header to the plugin. Cooldowns therefore use `cooldown_seconds`, even when a provider asks for a longer delay.
-- Nested host execution has no explicit requested-router metadata field. The plugin correlates CPA usage records to a short-lived in-memory marker; a record that cannot be correlated is stored as `unattributed`.
-- Status-less errors lose some structured failure information at the ABI boundary. The failure classifier is conservative and may stop on an unfamiliar transient error until that error is added explicitly.
-- Cooldown and round-robin state is process-local. It survives config reconfiguration when a route is unchanged, but not a CPA process restart.
-
-## Security Notes
-
-The plugin removes client `Authorization`, proxy authorization, cookies, host/content-length, and headers whose names contain API key, token, secret, or credential markers before calling `host.model.*`. CPA selects and applies the target provider credential. Other request headers and query parameters are preserved.
-
-Usage storage never includes prompt text, request or response bodies, failure bodies, response headers, or raw API keys. The request table can store a short masked API-key display value. Source URLs are stripped of user info, query strings, and fragments, while values that resemble credentials fall back to a provider label.
-
-The database is not encrypted by the plugin. Protect the configured path with filesystem permissions and volume access controls. Native plugins execute in the CPA process with CPA's permissions. Only load artifacts you built or verified, and do not put credentials in route model names.
-
-## Publishing And Plugin Store Registration
-
-The release workflow accepts tags such as `v0.4.2` and builds these CPA Plugin Store assets:
-
-```text
-model-router_0.4.2_linux_amd64.zip
-model-router_0.4.2_linux_arm64.zip
-model-router_0.4.2_darwin_amd64.zip
-model-router_0.4.2_darwin_arm64.zip
-model-router_0.4.2_windows_amd64.zip
-checksums.txt
-```
-
-Each zip contains exactly one root-level library named `model-router.so`, `model-router.dylib`, or `model-router.dll`. The workflow embeds the tag version in plugin metadata and validates the archive layout before publishing.
-
-To register the plugin publicly:
-
-1. Push this repository to `https://github.com/markhuangai/cpa-plugin-model-router`.
-2. Create and push a `v<major>.<minor>.<patch>` tag. Confirm the GitHub release contains all five zips plus `checksums.txt`.
-3. Fork `router-for-me/CLIProxyAPI-Plugins-Store` and add this object to `registry.json`:
-
-```json
-{
-  "id": "model-router",
-  "name": "Model Router",
-  "description": "Adds logical model aliases with priority or round-robin selection, cooldowns, and failover across CPA model targets.",
-  "author": "markhuangai",
-  "repository": "https://github.com/markhuangai/cpa-plugin-model-router",
-  "homepage": "https://github.com/markhuangai/cpa-plugin-model-router",
-  "license": "MIT",
-  "tags": ["Router", "Model Router", "Fallback"]
-}
-```
-
-4. Open a Plugin Store pull request that changes `registry.json`. Include the release tag and evidence that the platform archives and checksum file exist.
-
-Do not add a `version` field unless the store maintainers request it. CPA discovers the latest version from the repository's newest published `v*` release.
-
-After the registry PR is merged, install through the CPA management UI or `POST /v0/management/plugin-store/model-router/install`, then configure routes from the plugin's **Model Router** page or the generic config API.
+- [Gap analysis](docs/combo-gap-analysis.md)
+- [Architecture](docs/combo-architecture.md)
+- [Implementation plan](docs/combo-implementation-plan.md)
+- [Manual verification](docs/combo-manual-verification.md)
+- [Usage storage](docs/usage-tracking.md)
+- [Release notes](CHANGELOG.md)
 
 ## License
 
-MIT. See [LICENSE](LICENSE). The usage dashboard and pricing workflow were adapted from AITNR's MIT-licensed CAP Token Usage Tracker; see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+MIT. See [LICENSE](LICENSE).

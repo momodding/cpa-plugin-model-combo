@@ -3,6 +3,8 @@ package main
 import (
 	"context"
 	"errors"
+	"net/http"
+	"net/url"
 	"strings"
 	"testing"
 
@@ -13,7 +15,7 @@ import (
 // that way must move the request to the next target when the configuration lists
 // it, rather than be treated as an ambiguous failure.
 func TestExecuteStreamFailsOverWhenStartReturnsStatusWithError(t *testing.T) {
-	plugin := testRouterPluginFromConfig(t, `
+	plugin := testComboPluginFromConfig(t, `
 fallback:
   fallback_on_status: [400]
 routes:
@@ -43,8 +45,55 @@ routes:
 	}
 }
 
+func TestExecuteStreamRetriesAnotherPooledAccount(t *testing.T) {
+	plugin := testComboPluginFromConfig(t, `
+resilience: {max_attempts: 2, base_backoff_ms: 0, max_backoff_ms: 0}
+account_pools:
+  pool:
+    accounts:
+      - {key: first, auth_name: first, provider: openai}
+      - {key: second, auth_name: second, provider: openai}
+combos:
+  - alias: smart
+    groups:
+      - name: primary
+        targets: [{model: provider-a, account_pool: pool}]
+`)
+	host := &fakeModelHost{reads: map[string][]pluginapi.HostModelStreamReadResponse{
+		"stream-second": {{Payload: []byte(`data: {"model":"provider-a"}` + "\n\n"), Done: true}},
+	}}
+	host.listAuth = func() ([]pluginapi.HostAuthFileEntry, error) {
+		return []pluginapi.HostAuthFileEntry{{Name: "first", Provider: "openai", ID: "id-first"}, {Name: "second", Provider: "openai", ID: "id-second"}}, nil
+	}
+	host.start = func(request pluginapi.HostModelExecutionRequest) (pluginapi.HostModelStreamResponse, error) {
+		if request.AuthID == "id-first" {
+			return pluginapi.HostModelStreamResponse{StatusCode: http.StatusServiceUnavailable}, errors.New("unavailable")
+		}
+		return pluginapi.HostModelStreamResponse{StatusCode: http.StatusOK, StreamID: "stream-second"}, nil
+	}
+	if err := plugin.executeStreamWithHost(context.Background(), pluginapi.ExecutorRequest{Model: "smart", SourceFormat: "openai"}, "plugin-stream", host); err != nil {
+		t.Fatalf("executeStreamWithHost() error = %v", err)
+	}
+	if len(host.startCalls) != 2 || host.startCalls[0].AuthID != "id-first" || host.startCalls[1].AuthID != "id-second" {
+		t.Fatalf("account stream retries = %#v", host.startCalls)
+	}
+}
+
+func TestExecuteStreamReturnsCooldownWhenAllCandidatesCooling(t *testing.T) {
+	plugin := testComboPlugin(testModelRoute("smart", routeStrategyPriority, 30, "provider-a"))
+	plan := plugin.plans[0]
+	group := plan.groups[0]
+	candidate := group.candidates[0]
+	plugin.comboRuntime.MarkFailure(plan, group, candidate, plan.resilience)
+	host := &fakeModelHost{}
+	err := plugin.executeStreamWithHost(context.Background(), pluginapi.ExecutorRequest{Model: "smart"}, "plugin-stream", host)
+	if statusFromError(err) != 429 || codeFromError(err, "") != "model_combo_cooldown" || len(host.startCalls) != 0 {
+		t.Fatalf("executeStreamWithHost() error = %v, starts = %d", err, len(host.startCalls))
+	}
+}
+
 func TestExecuteStreamDoesNotFailOverOnRequestError(t *testing.T) {
-	plugin := testRouterPlugin(testModelRoute("smart", routeStrategyPriority, 30, "provider-a", "provider-b"))
+	plugin := testComboPlugin(testModelRoute("smart", routeStrategyPriority, 30, "provider-a", "provider-b"))
 	rejected := &fakeModelHost{start: func(pluginapi.HostModelExecutionRequest) (pluginapi.HostModelStreamResponse, error) {
 		return pluginapi.HostModelStreamResponse{StatusCode: 400}, errors.New(`{"error":{"message":"invalid request"}}`)
 	}}
@@ -72,7 +121,7 @@ func TestExecuteStreamDoesNotFailOverOnRequestError(t *testing.T) {
 }
 
 func TestExecuteStreamDoesNotFailOverOnExcludedStatusFromError(t *testing.T) {
-	plugin := testRouterPluginFromConfig(t, `
+	plugin := testComboPluginFromConfig(t, `
 fallback:
   fallback_on_status: [400]
   no_fallback_on_status: [429]
@@ -92,7 +141,7 @@ routes:
 }
 
 func TestExecuteStreamFailsOverBeforePayload(t *testing.T) {
-	plugin := testRouterPlugin(testModelRoute("smart", routeStrategyPriority, 30, "provider-a", "provider-b"))
+	plugin := testComboPlugin(testModelRoute("smart", routeStrategyPriority, 30, "provider-a", "provider-b"))
 	host := &fakeModelHost{reads: map[string][]pluginapi.HostModelStreamReadResponse{
 		"stream-b": {
 			{Payload: []byte(`data: {"model":"provider-b",`), Done: false},
@@ -118,7 +167,7 @@ func TestExecuteStreamFailsOverBeforePayload(t *testing.T) {
 }
 
 func TestExecuteStreamDoesNotRetryAfterPayload(t *testing.T) {
-	plugin := testRouterPlugin(testModelRoute("smart", routeStrategyPriority, 30, "provider-a", "provider-b"))
+	plugin := testComboPlugin(testModelRoute("smart", routeStrategyPriority, 30, "provider-a", "provider-b"))
 	host := &fakeModelHost{reads: map[string][]pluginapi.HostModelStreamReadResponse{
 		"stream-a": {
 			{Payload: []byte(`data: {"model":"provider-a"}` + "\n\n")},
@@ -144,13 +193,13 @@ func TestExecuteStreamAttemptsWeightedTargetOncePerRequest(t *testing.T) {
 			{Model: "b", Weight: 1},
 		},
 	}
-	plugin := testRouterPlugin(route)
+	plugin := testComboPlugin(route)
 	host := &fakeModelHost{}
 	host.start = func(request pluginapi.HostModelExecutionRequest) (pluginapi.HostModelStreamResponse, error) {
 		return pluginapi.HostModelStreamResponse{StatusCode: 429}, statusError{status: 429, message: request.Model + " unavailable"}
 	}
 	err := plugin.executeStreamWithHost(context.Background(), pluginapi.ExecutorRequest{Model: "weighted"}, "plugin-stream", host)
-	if statusFromError(err) != 503 || codeFromError(err, "") != "model_route_unavailable" {
+	if statusFromError(err) != 503 || codeFromError(err, "") != "model_combo_unavailable" {
 		t.Fatalf("executeStreamWithHost() error = %v", err)
 	}
 	if len(host.startCalls) != 2 || host.startCalls[0].Model != "a" || host.startCalls[1].Model != "b" {
@@ -229,5 +278,40 @@ func TestStreamModelRewriterSeparatesGluedSSEEvents(t *testing.T) {
 	payload := rewriter.Rewrite([]byte(`data: {"model":"one"}data: {"model":"two"}`))
 	if strings.Count(string(payload), `"model":"smart"`) != 2 || strings.Contains(string(payload), `}data:`) {
 		t.Fatalf("Rewrite() = %q", payload)
+	}
+}
+
+func TestExecuteStreamPreservesForwardingProtocol(t *testing.T) {
+	plugin := testComboPlugin(testModelRoute("smart", routeStrategyPriority, 30, "provider-a"))
+	host := &fakeModelHost{reads: map[string][]pluginapi.HostModelStreamReadResponse{
+		"stream-a": {{Payload: []byte("data: {\"model\":\"provider-a\"}\n\n"), Done: true}},
+	}}
+	host.start = func(pluginapi.HostModelExecutionRequest) (pluginapi.HostModelStreamResponse, error) {
+		return pluginapi.HostModelStreamResponse{StatusCode: http.StatusOK, StreamID: "stream-a"}, nil
+	}
+	err := plugin.executeStreamWithHost(context.Background(), pluginapi.ExecutorRequest{
+		Model:           "smart",
+		SourceFormat:    "openai",
+		OriginalRequest: []byte(`{"model":"smart","messages":[]}`),
+		Headers:         http.Header{"X-Trace": {"trace-id"}},
+		Query:           url.Values{"alt": {"json"}},
+		Alt:             "sse",
+	}, "plugin-stream", host)
+	if err != nil || len(host.startCalls) != 1 {
+		t.Fatalf("executeStreamWithHost() error = %v, calls = %d", err, len(host.startCalls))
+	}
+	call := host.startCalls[0]
+	if call.EntryProtocol != "openai" || call.ExitProtocol != "openai" || call.Model != "provider-a" || call.Headers.Get("X-Trace") != "trace-id" || call.Query.Get("alt") != "json" || call.Alt != "sse" || !strings.Contains(string(call.Body), `"model":"provider-a"`) {
+		t.Fatalf("forwarded stream request = %#v", call)
+	}
+}
+
+func TestForwardStreamAttemptWithAuthPinsExactID(t *testing.T) {
+	host := &fakeModelHost{start: func(pluginapi.HostModelExecutionRequest) (pluginapi.HostModelStreamResponse, error) {
+		return pluginapi.HostModelStreamResponse{StatusCode: http.StatusBadGateway}, nil
+	}}
+	_, _ = forwardStreamAttemptWithAuth(pluginapi.ExecutorRequest{}, executionBody{}, "provider/model", "requested", "stream", host, "opaque-auth-id")
+	if len(host.startCalls) != 1 || host.startCalls[0].AuthID != "opaque-auth-id" {
+		t.Fatalf("stream AuthID = %#v, want exact pin", host.startCalls)
 	}
 }

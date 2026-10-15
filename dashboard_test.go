@@ -11,14 +11,14 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
 )
 
-func TestAssembleModelRouterDashboardEmbedsEveryAssetOnce(t *testing.T) {
-	page, err := assembleModelRouterDashboard(dashboardSource)
+func TestAssembleModelComboDashboardEmbedsEveryAssetOnce(t *testing.T) {
+	page, err := assembleModelComboDashboard(dashboardSource)
 	if err != nil {
 		t.Fatalf("assemble dashboard: %v", err)
 	}
 	html := string(page)
 	for _, marker := range []string{
-		"<title>Model Router</title>",
+		"<title>Model Combo</title>",
 		"id=\"configuration-panel\"",
 		"id=\"usage-panel\"",
 		"id=\"empty-template\"",
@@ -32,6 +32,9 @@ func TestAssembleModelRouterDashboardEmbedsEveryAssetOnce(t *testing.T) {
 		"function initializeUsageChartEvents()",
 		"function initializePricingEvents()",
 		"function restoreRouteFocus(descriptor)",
+		"id=\"combos-json\"",
+		"function configurationSnapshot()",
+		"Advanced combo definitions must be a JSON array.",
 	} {
 		if !strings.Contains(html, marker) {
 			t.Errorf("assembled dashboard is missing %q", marker)
@@ -69,7 +72,7 @@ func TestAssembleModelRouterDashboardEmbedsEveryAssetOnce(t *testing.T) {
 	}
 }
 
-func TestAssembleModelRouterDashboardReportsInvalidAssets(t *testing.T) {
+func TestAssembleModelComboDashboardReportsInvalidAssets(t *testing.T) {
 	tests := []struct {
 		name string
 		fs   fstest.MapFS
@@ -92,7 +95,7 @@ func TestAssembleModelRouterDashboardReportsInvalidAssets(t *testing.T) {
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			_, err := assembleModelRouterDashboard(test.fs)
+			_, err := assembleModelComboDashboard(test.fs)
 			if err == nil || !strings.Contains(err.Error(), test.want) {
 				t.Fatalf("assemble error = %v, want containing %q", err, test.want)
 			}
@@ -100,14 +103,14 @@ func TestAssembleModelRouterDashboardReportsInvalidAssets(t *testing.T) {
 	}
 }
 
-func TestModelRouterManagementDashboardReportsAssemblyFailure(t *testing.T) {
+func TestModelComboManagementDashboardReportsAssemblyFailure(t *testing.T) {
 	previous := configDashboardError
 	configDashboardError = errors.New("test dashboard assembly failure")
 	t.Cleanup(func() { configDashboardError = previous })
 
-	response := handleModelRouterManagement(nil, pluginapi.ManagementRequest{
+	response := handleModelComboManagement(nil, pluginapi.ManagementRequest{
 		Method: http.MethodGet,
-		Path:   modelRouterDashboardPath,
+		Path:   modelComboDashboardPath,
 	})
 	if response.StatusCode != http.StatusInternalServerError || !strings.Contains(string(response.Body), "dashboard_render_failed") {
 		t.Fatalf("dashboard assembly failure response = status %d, body %s", response.StatusCode, response.Body)

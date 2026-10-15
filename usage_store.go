@@ -308,7 +308,7 @@ func (store *usageStore) Record(record storedUsageRecord) error {
 	}()
 	if err != nil {
 		store.recordError(err)
-		log.Printf("model-router: persist usage: %v", err)
+		log.Printf("model-combo: persist usage: %v", err)
 	} else {
 		store.clearError()
 	}

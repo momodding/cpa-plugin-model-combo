@@ -11,9 +11,9 @@ import (
 //go:embed dashboard.html dashboard
 var dashboardSource embed.FS
 
-var configDashboardHTML, configDashboardError = assembleModelRouterDashboard(dashboardSource)
+var configDashboardHTML, configDashboardError = assembleModelComboDashboard(dashboardSource)
 
-func assembleModelRouterDashboard(source fs.FS) ([]byte, error) {
+func assembleModelComboDashboard(source fs.FS) ([]byte, error) {
 	shell, err := fs.ReadFile(source, "dashboard.html")
 	if err != nil {
 		return nil, fmt.Errorf("read dashboard shell: %w", err)

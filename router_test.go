@@ -16,7 +16,7 @@ func testModelRoute(alias, strategy string, cooldown int, models ...string) mode
 }
 
 func TestRouteModelMatchesAliasAndThinkingSuffix(t *testing.T) {
-	plugin := testRouterPlugin(testModelRoute("smart", routeStrategyPriority, 30, "provider-a"))
+	plugin := testComboPlugin(testModelRoute("smart", routeStrategyPriority, 30, "provider-a"))
 	for _, model := range []string{"smart", "SMART", "smart(high)"} {
 		response, err := plugin.RouteModel(context.Background(), pluginapi.ModelRouteRequest{RequestedModel: model})
 		if err != nil {
@@ -33,10 +33,8 @@ func TestRouteModelMatchesAliasAndThinkingSuffix(t *testing.T) {
 }
 
 func TestRegisterModelsAddsLogicalAliases(t *testing.T) {
-	plugin := testRouterPlugin(
-		testModelRoute("smart", routeStrategyPriority, 30, "a"),
-		testModelRoute("fast", routeStrategyRoundRobin, 30, "b"),
-	)
+	plugin := testComboPlugin(testModelRoute("smart", routeStrategyPriority, 30, "a"),
+		testModelRoute("fast", routeStrategyRoundRobin, 30, "b"))
 	response, err := plugin.RegisterModels(context.Background(), pluginapi.ModelRegistrationRequest{})
 	if err != nil {
 		t.Fatalf("RegisterModels() error = %v", err)
@@ -58,8 +56,21 @@ func TestTargetModelPreservesRequestedThinkingSuffix(t *testing.T) {
 	}
 }
 
-func testRouterPlugin(routes ...modelRoute) *modelRouterPlugin {
-	runtime := newRouteRuntime(nil)
-	runtime.Sync(routes)
-	return &modelRouterPlugin{config: routerConfig{Enabled: true, Routes: routes}, runtime: runtime}
+func testComboPlugin(routes ...modelRoute) *modelComboPlugin {
+	legacyRuntime := newRouteRuntime(nil)
+	legacyRuntime.Sync(routes)
+	combos := normalizeLegacyRoutes(routes)
+	resilience, err := normalizeResilience(nil)
+	if err != nil {
+		panic(err)
+	}
+	plans := compileCombos(combos, resilience)
+	comboRuntime := newComboRuntime(nil)
+	comboRuntime.Sync(plans)
+	return &modelComboPlugin{
+		config:       routerConfig{Enabled: true, Routes: routes, Combos: combos, Resilience: resilience},
+		plans:        plans,
+		runtime:      legacyRuntime,
+		comboRuntime: comboRuntime,
+	}
 }

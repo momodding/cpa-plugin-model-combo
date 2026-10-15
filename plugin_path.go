@@ -6,7 +6,7 @@ import (
 	"strings"
 )
 
-const defaultDataFileName = "model-router.db"
+const defaultDataFileName = "model-combo-usage.db"
 
 var defaultDataPathResolver = resolvedDefaultDataPath
 

@@ -33,6 +33,19 @@ func TestAttributionTrackerRoutedDirectAndConflict(t *testing.T) {
 	}
 }
 
+func TestAttributionTrackerRequiresMatchingOpaqueAuthID(t *testing.T) {
+	now := time.Date(2026, 8, 19, 12, 0, 0, 0, time.UTC)
+	tracker := newAttributionTracker(func() time.Time { return now })
+	tracker.MarkRoutedWithAuth("auto", "gpt-5.4", nil, "opaque-auth-a")
+
+	if got := tracker.Match(pluginapi.UsageRecord{Model: "gpt-5.4", AuthID: "opaque-auth-b", RequestedAt: now}); got.Kind != attributionUnresolved {
+		t.Fatalf("wrong account attribution = %#v", got)
+	}
+	if got := tracker.Match(pluginapi.UsageRecord{Model: "gpt-5.4", AuthID: "opaque-auth-a", RequestedAt: now}); got.Kind != attributionRouted || got.RouterModel != "auto" {
+		t.Fatalf("matching account attribution = %#v", got)
+	}
+}
+
 func TestAttributionTrackerRequiresCredentialAndUnanimousRoute(t *testing.T) {
 	now := time.Date(2026, 8, 19, 12, 0, 0, 0, time.UTC)
 	tracker := newAttributionTracker(func() time.Time { return now })

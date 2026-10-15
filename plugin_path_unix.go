@@ -7,9 +7,9 @@ package main
 #define _GNU_SOURCE
 #include <dlfcn.h>
 
-static const char* model_router_module_path(void) {
+static const char* model_combo_module_path(void) {
 	Dl_info info;
-	if (dladdr((void*)&model_router_module_path, &info) == 0 || info.dli_fname == NULL) {
+	if (dladdr((void*)&model_combo_module_path, &info) == 0 || info.dli_fname == NULL) {
 		return NULL;
 	}
 	return info.dli_fname;
@@ -18,7 +18,7 @@ static const char* model_router_module_path(void) {
 import "C"
 
 func loadedPluginPath() (string, bool) {
-	path := C.model_router_module_path()
+	path := C.model_combo_module_path()
 	if path == nil {
 		return "", false
 	}

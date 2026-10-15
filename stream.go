@@ -5,11 +5,12 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
 )
 
-func (p *modelRouterPlugin) startStream(request executorRPCRequest, host modelHost) ([]byte, error) {
+func (p *modelComboPlugin) startStream(request executorRPCRequest, host modelHost) ([]byte, error) {
 	streamID := strings.TrimSpace(request.StreamID)
 	if streamID == "" {
 		return errorEnvelope("executor_error", "stream_id is required for executor.execute_stream", 0), nil
@@ -29,51 +30,114 @@ func (p *modelRouterPlugin) startStream(request executorRPCRequest, host modelHo
 	return okEnvelope(map[string]any{"headers": http.Header{"Content-Type": []string{"text/event-stream"}}})
 }
 
-func (p *modelRouterPlugin) executeStreamWithHost(_ context.Context, request pluginapi.ExecutorRequest, pluginStreamID string, host modelHost) error {
+func (p *modelComboPlugin) executeStreamWithHost(ctx context.Context, request pluginapi.ExecutorRequest, pluginStreamID string, host modelHost) error {
 	if p == nil || host == nil {
-		return statusError{status: http.StatusBadGateway, message: "model router host callback is unavailable"}
+		return statusError{status: http.StatusBadGateway, message: "model combo host callback is unavailable"}
 	}
-	route, ok := p.matchingRoute(request.Model)
+	plan, ok := p.matchingCombo(request.Model)
 	if !ok {
-		return statusError{status: http.StatusBadGateway, message: "no model route matched executor stream request"}
+		return statusError{status: http.StatusBadGateway, message: "no model combo matched executor stream request"}
 	}
 	requestedModel := strings.TrimSpace(request.Model)
 	bodyInfo := bodyForExecution(request)
+	requiredCapabilities := requestCapabilities(request, bodyInfo)
 	policy := p.config.fallbackPolicy()
+	ledger := newAttemptLedger(plan.maxAttempts, plan.resilience.DeadlineMilliseconds)
 	var lastErr error
-	attempted := make(map[string]struct{}, len(route.Targets))
-	for attempt := 0; attempt < len(route.Targets); attempt++ {
-		selection := p.runtime.SelectExcluding(route, attempted)
-		if selection.allCooling {
-			return cooldownRouteError(route, selection.retryAfter)
+	var retryAfter time.Duration
+	allGroupsHealthBlocked := true
+	var authEntries []pluginapi.HostAuthFileEntry
+	authListed := false
+
+	for _, group := range plan.groups {
+		for ledger.canAttempt() {
+			selection := p.comboRuntime.selectFromGroup(plan, group, ledger, requiredCapabilities)
+			if selection.candidate.model == "" {
+				if selection.allCooling && selection.retryAfter > retryAfter {
+					retryAfter = selection.retryAfter
+				} else if !selection.allCooling {
+					allGroupsHealthBlocked = false
+				}
+				break
+			}
+			allGroupsHealthBlocked = false
+			pooled := selection.candidate.accountPool != nil
+			resolved := []resolvedAccount{{}}
+			if pooled {
+				if !authListed {
+					authEntries, lastErr = host.ListAuth()
+					authListed = true
+				}
+				resolved = resolveAccountPool(selection.candidate.accountPool, authEntries)
+				if lastErr != nil || len(resolved) == 0 {
+					ledger.markCandidateExhausted(selection.candidate.candidateKey)
+					p.comboRuntime.ReleaseProbe(plan, group, selection.candidate)
+					continue
+				}
+			}
+			attemptedAccounts := make(map[string]struct{}, len(resolved))
+			candidatePenalized := false
+			for ledger.canAttempt() {
+				authID := ""
+				if pooled {
+					account, ok := selectResolvedAccount(p.comboRuntime, selection.candidate.accountPool, excludeResolvedAccounts(resolved, attemptedAccounts))
+					if !ok {
+						break
+					}
+					authID = account.id
+					attemptedAccounts[account.key+"\x00"+account.id] = struct{}{}
+				}
+				ledger.recordAttempt()
+				target := targetModel(requestedModel, selection.candidate.model)
+				p.attribution.MarkRoutedWithAuth(plan.alias, target, request.Headers, authID)
+				receivedPayload, err := forwardStreamAttemptWithAuth(request, bodyInfo, target, requestedModel, pluginStreamID, host, authID)
+				if err == nil {
+					p.comboRuntime.MarkSuccess(plan, group, selection.candidate)
+					return nil
+				}
+				if receivedPayload {
+					p.comboRuntime.MarkSuccess(plan, group, selection.candidate)
+					return err
+				}
+				failure := classifyAttemptFailure(err, nil, policy, time.Duration(plan.resilience.MaxBackoffMilliseconds)*time.Millisecond, time.Until(ledger.deadline))
+				if failure.terminal || !failure.retry {
+					p.comboRuntime.ReleaseProbe(plan, group, selection.candidate)
+					return err
+				}
+				lastErr, ledger.lastErr = err, err
+				candidatePenalized = candidatePenalized || failure.penalize
+				if err := waitForBackoff(ctx, backoffDelay(ledger.count-1, plan.resilience, failure.retryAfter, time.Until(ledger.deadline))); err != nil {
+					p.comboRuntime.ReleaseProbe(plan, group, selection.candidate)
+					return err
+				}
+				if !pooled {
+					break
+				}
+			}
+			ledger.markCandidateExhausted(selection.candidate.candidateKey)
+			if candidatePenalized {
+				p.comboRuntime.MarkFailure(plan, group, selection.candidate, plan.resilience)
+			} else {
+				p.comboRuntime.ReleaseProbe(plan, group, selection.candidate)
+			}
 		}
-		if selection.model == "" {
-			break
-		}
-		attempted[routeKey(selection.model)] = struct{}{}
-		target := targetModel(requestedModel, selection.model)
-		p.attribution.MarkRouted(route.Alias, target, request.Headers)
-		receivedPayload, err := forwardStreamAttempt(request, bodyInfo, target, requestedModel, pluginStreamID, host)
-		if err == nil {
-			return nil
-		}
-		if eligibleRouteFailure(err, policy) {
-			p.runtime.MarkFailure(route, selection.model)
-		}
-		if receivedPayload || !eligibleRouteFailure(err, policy) {
-			return err
-		}
-		lastErr = err
+	}
+	if lastErr == nil && allGroupsHealthBlocked && retryAfter > 0 {
+		return cooldownComboError(plan.alias, retryAfter)
 	}
 	detail := ""
 	if lastErr != nil {
 		detail = lastErr.Error()
 	}
-	return newRouteError(http.StatusServiceUnavailable, "model_route_unavailable", route.Alias, fmt.Sprintf("no available candidate for model route %q", route.Alias), detail)
+	return newRouteError(http.StatusServiceUnavailable, "model_combo_unavailable", plan.alias, fmt.Sprintf("no available candidate for model combo %q", plan.alias), detail)
 }
 
 func forwardStreamAttempt(request pluginapi.ExecutorRequest, bodyInfo executionBody, target, requestedModel, pluginStreamID string, host modelHost) (bool, error) {
-	response, err := host.StartStream(hostRequest(request, bodyInfo, target, true))
+	return forwardStreamAttemptWithAuth(request, bodyInfo, target, requestedModel, pluginStreamID, host, "")
+}
+
+func forwardStreamAttemptWithAuth(request pluginapi.ExecutorRequest, bodyInfo executionBody, target, requestedModel, pluginStreamID string, host modelHost, authID string) (bool, error) {
+	response, err := host.StartStream(hostRequestWithAuth(request, bodyInfo, target, true, authID))
 	if err != nil {
 		// StartStream may report the upstream status alongside the error. Preserve it
 		// so the failure is classified by the fallback policy instead of falling

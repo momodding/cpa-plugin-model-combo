@@ -23,7 +23,7 @@ import (
 	"time"
 )
 
-func TestModelRouterWithCLIProxyAPI(t *testing.T) {
+func TestModelComboWithCLIProxyAPI(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("the native host smoke test is currently exercised on Unix hosts")
 	}
@@ -70,7 +70,7 @@ func TestModelRouterWithCLIProxyAPI(t *testing.T) {
 		workingCalls.Add(1)
 		if body.Stream {
 			response.Header().Set("Content-Type", "text/event-stream")
-			_, _ = fmt.Fprintf(response, "data: {\"id\":\"model-router-smoke-stream\",\"object\":\"chat.completion.chunk\",\"model\":%q,\"choices\":[{\"index\":0,\"delta\":{\"content\":\"upstream=%s\"},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":2,\"completion_tokens\":1,\"total_tokens\":3}}\n\n", body.Model, body.Model)
+			_, _ = fmt.Fprintf(response, "data: {\"id\":\"model-combo-smoke-stream\",\"object\":\"chat.completion.chunk\",\"model\":%q,\"choices\":[{\"index\":0,\"delta\":{\"content\":\"upstream=%s\"},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":2,\"completion_tokens\":1,\"total_tokens\":3}}\n\n", body.Model, body.Model)
 			_, _ = io.WriteString(response, "data: [DONE]\n\n")
 			return
 		}
@@ -84,7 +84,7 @@ func TestModelRouterWithCLIProxyAPI(t *testing.T) {
 			}
 		}
 		_ = json.NewEncoder(response).Encode(map[string]any{
-			"id":      "model-router-smoke",
+			"id":      "model-combo-smoke",
 			"object":  "chat.completion",
 			"created": 1,
 			"model":   body.Model,
@@ -107,7 +107,7 @@ func TestModelRouterWithCLIProxyAPI(t *testing.T) {
 	if err := os.MkdirAll(pluginsDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	pluginPath := filepath.Join(pluginsDir, "model-router"+sharedLibraryExtension())
+	pluginPath := filepath.Join(pluginsDir, "model-combo"+sharedLibraryExtension())
 	runSmokeCommand(t, ".", "go", "build", "-buildmode=c-shared", "-o", pluginPath, ".")
 	cpaBinary := filepath.Join(workDir, "cli-proxy-api")
 	runSmokeCommand(t, cpaSource, "go", "build", "-o", cpaBinary, "./cmd/server")
@@ -128,7 +128,7 @@ plugins:
   enabled: true
   dir: %q
   configs:
-    model-router:
+    model-combo:
       enabled: true
       priority: 100
       retention_days: 45
@@ -177,7 +177,7 @@ openai-compatibility:
 	baseURL := fmt.Sprintf("http://127.0.0.1:%d", port)
 	cpa := startSmokeCPA(t, cpaBinary, configPath, baseURL)
 	logs := cpa.logs
-	verifyModelRouterManagementUI(t, baseURL, logs)
+	verifyModelComboManagementUI(t, baseURL, logs)
 	if !waitForSmokeModel(t, baseURL, "smoke-router-alias", 10*time.Second) {
 		t.Fatalf("model route alias smoke-router-alias was not registered\n%s", logs.String())
 	}
@@ -227,7 +227,7 @@ openai-compatibility:
 
 	page := waitForSmokeUsage(t, baseURL, usageStart, 6, 10*time.Second)
 	var dashboard usageDashboard
-	dashboardPath := modelRouterUsageBasePath + "/dashboard?" + url.Values{
+	dashboardPath := modelComboUsageBasePath + "/dashboard?" + url.Values{
 		"from": {usageStart.Format(time.RFC3339Nano)}, "to": {time.Now().UTC().Format(time.RFC3339Nano)},
 		"granularity": {"minute"}, "group_dimension": {"router_model"}, "request_limit": {"2"},
 	}.Encode()
@@ -279,7 +279,7 @@ openai-compatibility:
 		t.Fatalf("usage records were missing, duplicated, or lost cache creation: total=%d routed_success=%d routed_failure=%d direct_success=%d tokens=%d cache_creation=%d items=%#v\n%s", page.Total, routedSuccesses, routedFailures, directSuccesses, totalTokens, cacheCreationTokens, page.Items, logs.String())
 	}
 
-	savedPrices := putSmokeManagementJSON[saveModelPricesRequest, modelPriceBook](t, baseURL, modelRouterUsageBasePath+"/prices", saveModelPricesRequest{
+	savedPrices := putSmokeManagementJSON[saveModelPricesRequest, modelPriceBook](t, baseURL, modelComboUsageBasePath+"/prices", saveModelPricesRequest{
 		Prices:       map[string]modelPrice{routedModel: {tokenRates: tokenRates{Input: 1.25, Output: 2.5}}},
 		SyncSettings: defaultPriceSyncSettings(),
 	})
@@ -289,7 +289,7 @@ openai-compatibility:
 	preferences := defaultDashboardPreferences()
 	preferences.RequestPageSize = 25
 	preferences.HiddenGroupColumns = []string{"result", "service_tier", "source"}
-	savedPreferences := putSmokeManagementJSON[dashboardPreferences, dashboardPreferences](t, baseURL, modelRouterUsageBasePath+"/preferences", preferences)
+	savedPreferences := putSmokeManagementJSON[dashboardPreferences, dashboardPreferences](t, baseURL, modelComboUsageBasePath+"/preferences", preferences)
 	if savedPreferences.RequestPageSize != 25 || !slices.Equal(savedPreferences.HiddenGroupColumns, preferences.HiddenGroupColumns) {
 		t.Fatalf("saved preferences = %#v", savedPreferences)
 	}
@@ -304,11 +304,11 @@ openai-compatibility:
 	if restartedPage.Total < page.Total {
 		t.Fatalf("usage records were lost across restart: before=%d after=%d\n%s", page.Total, restartedPage.Total, logs.String())
 	}
-	restartedPrices := getSmokeManagementJSON[modelPriceBook](t, baseURL, modelRouterUsageBasePath+"/prices")
+	restartedPrices := getSmokeManagementJSON[modelPriceBook](t, baseURL, modelComboUsageBasePath+"/prices")
 	if restartedPrices.Revision != savedPrices.Revision || restartedPrices.Prices[routedModel].Input != 1.25 {
 		t.Fatalf("prices were lost across restart: %#v", restartedPrices)
 	}
-	restartedPreferences := getSmokeManagementJSON[dashboardPreferences](t, baseURL, modelRouterUsageBasePath+"/preferences")
+	restartedPreferences := getSmokeManagementJSON[dashboardPreferences](t, baseURL, modelComboUsageBasePath+"/preferences")
 	if restartedPreferences.RequestPageSize != 25 || !slices.Equal(restartedPreferences.HiddenGroupColumns, preferences.HiddenGroupColumns) {
 		t.Fatalf("preferences were lost across restart: %#v", restartedPreferences)
 	}
@@ -331,7 +331,7 @@ openai-compatibility:
 	}
 }
 
-func TestModelRouterFallbackStatusesWithCLIProxyAPI(t *testing.T) {
+func TestModelComboFallbackStatusesWithCLIProxyAPI(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("the native host smoke test is currently exercised on Unix hosts")
 	}
@@ -452,7 +452,7 @@ func TestModelRouterFallbackStatusesWithCLIProxyAPI(t *testing.T) {
 `, name, prefix, provider.URL+"/v1", key)
 	}
 	workDir := t.TempDir()
-	pluginArtifact := filepath.Join(workDir, "model-router"+sharedLibraryExtension())
+	pluginArtifact := filepath.Join(workDir, "model-combo"+sharedLibraryExtension())
 	runSmokeCommand(t, ".", "go", "build", "-buildmode=c-shared", "-o", pluginArtifact, ".")
 	cpaBinary := filepath.Join(workDir, "cli-proxy-api")
 	runSmokeCommand(t, cpaSource, "go", "build", "-o", cpaBinary, "./cmd/server")
@@ -462,7 +462,7 @@ func TestModelRouterFallbackStatusesWithCLIProxyAPI(t *testing.T) {
 		if err := os.MkdirAll(pluginsDir, 0o755); err != nil {
 			t.Fatal(err)
 		}
-		if err := os.Link(pluginArtifact, filepath.Join(pluginsDir, "model-router"+sharedLibraryExtension())); err != nil {
+		if err := os.Link(pluginArtifact, filepath.Join(pluginsDir, "model-combo"+sharedLibraryExtension())); err != nil {
 			t.Fatalf("link plugin for %s: %v", scenario.name, err)
 		}
 		port := reserveLocalPort(t)
@@ -477,7 +477,7 @@ plugins:
   enabled: true
   dir: %q
   configs:
-    model-router:
+    model-combo:
       enabled: true
       priority: 100
       fallback:
@@ -518,7 +518,7 @@ openai-compatibility:%s`, port, filepath.Join(caseDir, "auth"), pluginsDir, rout
 	}
 }
 
-func TestModelRouterResponsesSSEFramingWithCLIProxyAPI(t *testing.T) {
+func TestModelComboResponsesSSEFramingWithCLIProxyAPI(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("the native host smoke test is currently exercised on Unix hosts")
 	}
@@ -590,7 +590,7 @@ func TestModelRouterResponsesSSEFramingWithCLIProxyAPI(t *testing.T) {
 	if err := os.MkdirAll(pluginsDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	pluginPath := filepath.Join(pluginsDir, "model-router"+sharedLibraryExtension())
+	pluginPath := filepath.Join(pluginsDir, "model-combo"+sharedLibraryExtension())
 	runSmokeCommand(t, ".", "go", "build", "-buildmode=c-shared", "-o", pluginPath, ".")
 	cpaBinary := filepath.Join(workDir, "cli-proxy-api")
 	runSmokeCommand(t, cpaSource, "go", "build", "-o", cpaBinary, "./cmd/server")
@@ -607,7 +607,7 @@ plugins:
   enabled: true
   dir: %q
   configs:
-    model-router:
+    model-combo:
       enabled: true
       priority: 100
       routes:
@@ -665,7 +665,7 @@ codex-api-key:
 	}
 }
 
-func verifyModelRouterManagementUI(t *testing.T, baseURL string, logs *smokeSyncBuffer) {
+func verifyModelComboManagementUI(t *testing.T, baseURL string, logs *smokeSyncBuffer) {
 	t.Helper()
 	client := &http.Client{Timeout: 5 * time.Second}
 	request, err := http.NewRequest(http.MethodGet, baseURL+"/v0/management/plugins", nil)
@@ -704,8 +704,8 @@ func verifyModelRouterManagementUI(t *testing.T, baseURL string, logs *smokeSync
 			}
 		}
 	}
-	if resourcePath != modelRouterDashboardPath {
-		t.Fatalf("dashboard path = %q, want %q; plugins=%#v\n%s", resourcePath, modelRouterDashboardPath, plugins, logs.String())
+	if resourcePath != modelComboDashboardPath {
+		t.Fatalf("dashboard path = %q, want %q; plugins=%#v\n%s", resourcePath, modelComboDashboardPath, plugins, logs.String())
 	}
 
 	resourceResponse, err := client.Get(baseURL + resourcePath)
@@ -717,7 +717,7 @@ func verifyModelRouterManagementUI(t *testing.T, baseURL string, logs *smokeSync
 	if err != nil {
 		t.Fatal(err)
 	}
-	if resourceResponse.StatusCode != http.StatusOK || !strings.Contains(string(resourceBody), "<title>Model Router</title>") {
+	if resourceResponse.StatusCode != http.StatusOK || !strings.Contains(string(resourceBody), "<title>Model Combo</title>") {
 		t.Fatalf("dashboard status=%s body=%q", resourceResponse.Status, resourceBody)
 	}
 	for _, expected := range []string{"/v0/management/api-keys", "/v1/models", "<select data-target-field=\"model\"", "data-target-field=\"weight\"", "data-target-help"} {
@@ -780,7 +780,7 @@ func verifyModelRouterManagementUI(t *testing.T, baseURL string, logs *smokeSync
 	}
 
 	validation := []byte(`{"enabled":true,"routes":[{"alias":"smoke","strategy":"priority","cooldown_seconds":60,"models":["provider/model"]}]}`)
-	unauthenticatedRequest, err := http.NewRequest(http.MethodPost, baseURL+modelRouterValidationPath, bytes.NewReader(validation))
+	unauthenticatedRequest, err := http.NewRequest(http.MethodPost, baseURL+modelComboValidationPath, bytes.NewReader(validation))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -794,7 +794,7 @@ func verifyModelRouterManagementUI(t *testing.T, baseURL string, logs *smokeSync
 		t.Fatalf("unauthenticated validation status=%s, want 401", unauthenticatedResponse.Status)
 	}
 
-	validationRequest, err := http.NewRequest(http.MethodPost, baseURL+modelRouterValidationPath, bytes.NewReader(validation))
+	validationRequest, err := http.NewRequest(http.MethodPost, baseURL+modelComboValidationPath, bytes.NewReader(validation))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -908,7 +908,7 @@ func waitForSmokeUsage(t *testing.T, baseURL string, from time.Time, minimumTota
 			"limit": {"100"},
 		}
 		var page usageRequestPage
-		lastErr = requestSmokeManagementJSON(baseURL, modelRouterUsageBasePath+"/requests?"+query.Encode(), &page)
+		lastErr = requestSmokeManagementJSON(baseURL, modelComboUsageBasePath+"/requests?"+query.Encode(), &page)
 		if lastErr == nil {
 			lastPage = page
 			foundRouted, foundDirect := false, false

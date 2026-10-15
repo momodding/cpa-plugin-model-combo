@@ -17,12 +17,12 @@ import (
 
 const maxPriceRequestBytes = 2 << 20
 
-func handleUsageManagement(plugin *modelRouterPlugin, path string, request pluginapi.ManagementRequest) pluginapi.ManagementResponse {
+func handleUsageManagement(plugin *modelComboPlugin, path string, request pluginapi.ManagementRequest) pluginapi.ManagementResponse {
 	if plugin == nil || plugin.store == nil {
-		return modelRouterJSONResponse(http.StatusServiceUnavailable, map[string]string{"error": "usage_storage_unavailable", "message": "usage storage is not initialized"})
+		return modelComboJSONResponse(http.StatusServiceUnavailable, map[string]string{"error": "usage_storage_unavailable", "message": "usage storage is not initialized"})
 	}
 	switch path {
-	case modelRouterUsageBasePath + "/dashboard":
+	case modelComboUsageBasePath + "/dashboard":
 		if !strings.EqualFold(request.Method, http.MethodGet) {
 			return usageMethodNotAllowed(http.MethodGet)
 		}
@@ -46,8 +46,8 @@ func handleUsageManagement(plugin *modelRouterPlugin, path string, request plugi
 		if err != nil {
 			return usageStorageError(err)
 		}
-		return modelRouterJSONResponse(http.StatusOK, result)
-	case modelRouterUsageBasePath + "/overview":
+		return modelComboJSONResponse(http.StatusOK, result)
+	case modelComboUsageBasePath + "/overview":
 		if !strings.EqualFold(request.Method, http.MethodGet) {
 			return usageMethodNotAllowed(http.MethodGet)
 		}
@@ -63,8 +63,8 @@ func handleUsageManagement(plugin *modelRouterPlugin, path string, request plugi
 		if err != nil {
 			return usageStorageError(err)
 		}
-		return modelRouterJSONResponse(http.StatusOK, overview)
-	case modelRouterUsageBasePath + "/groups":
+		return modelComboJSONResponse(http.StatusOK, overview)
+	case modelComboUsageBasePath + "/groups":
 		if !strings.EqualFold(request.Method, http.MethodGet) {
 			return usageMethodNotAllowed(http.MethodGet)
 		}
@@ -80,8 +80,8 @@ func handleUsageManagement(plugin *modelRouterPlugin, path string, request plugi
 		if err != nil {
 			return usageStorageError(err)
 		}
-		return modelRouterJSONResponse(http.StatusOK, page)
-	case modelRouterUsageBasePath + "/requests":
+		return modelComboJSONResponse(http.StatusOK, page)
+	case modelComboUsageBasePath + "/requests":
 		if !strings.EqualFold(request.Method, http.MethodGet) {
 			return usageMethodNotAllowed(http.MethodGet)
 		}
@@ -97,17 +97,17 @@ func handleUsageManagement(plugin *modelRouterPlugin, path string, request plugi
 		if err != nil {
 			return usageStorageError(err)
 		}
-		return modelRouterJSONResponse(http.StatusOK, page)
-	case modelRouterUsageBasePath + "/prices":
+		return modelComboJSONResponse(http.StatusOK, page)
+	case modelComboUsageBasePath + "/prices":
 		return handleUsagePrices(plugin, request)
-	case modelRouterUsageBasePath + "/prices/sync":
+	case modelComboUsageBasePath + "/prices/sync":
 		return handleUsagePriceSync(plugin, request)
-	case modelRouterUsageBasePath + "/preferences":
+	case modelComboUsageBasePath + "/preferences":
 		return handleUsagePreferences(plugin, request)
-	case modelRouterUsageBasePath + "/reset":
+	case modelComboUsageBasePath + "/reset":
 		return handleUsageReset(plugin, request)
 	default:
-		return modelRouterJSONResponse(http.StatusNotFound, map[string]string{"error": "not_found", "message": "usage management resource not found"})
+		return modelComboJSONResponse(http.StatusNotFound, map[string]string{"error": "not_found", "message": "usage management resource not found"})
 	}
 }
 
@@ -137,14 +137,14 @@ func parseUsageGroupOptions(query map[string][]string, prefix string) (usageGrou
 	return options, err
 }
 
-func handleUsagePrices(plugin *modelRouterPlugin, request pluginapi.ManagementRequest) pluginapi.ManagementResponse {
+func handleUsagePrices(plugin *modelComboPlugin, request pluginapi.ManagementRequest) pluginapi.ManagementResponse {
 	switch {
 	case strings.EqualFold(request.Method, http.MethodGet):
 		book, err := plugin.store.QueryPriceBook()
 		if err != nil {
 			return usageStorageError(err)
 		}
-		return modelRouterJSONResponse(http.StatusOK, book)
+		return modelComboJSONResponse(http.StatusOK, book)
 	case strings.EqualFold(request.Method, http.MethodPut):
 		var input saveModelPricesRequest
 		if err := decodeManagementJSON(request.Body, maxPriceRequestBytes, &input); err != nil {
@@ -152,18 +152,18 @@ func handleUsagePrices(plugin *modelRouterPlugin, request pluginapi.ManagementRe
 		}
 		book, err := plugin.store.SavePriceBook(input, time.Now().UTC())
 		if errors.Is(err, errPriceRevisionConflict) {
-			return modelRouterJSONResponse(http.StatusConflict, map[string]string{"error": "revision_conflict", "message": "model prices changed; reload before saving"})
+			return modelComboJSONResponse(http.StatusConflict, map[string]string{"error": "revision_conflict", "message": "model prices changed; reload before saving"})
 		}
 		if err != nil {
 			return usageBadRequest(err)
 		}
-		return modelRouterJSONResponse(http.StatusOK, book)
+		return modelComboJSONResponse(http.StatusOK, book)
 	default:
 		return usageMethodNotAllowed(http.MethodGet, http.MethodPut)
 	}
 }
 
-func handleUsagePriceSync(plugin *modelRouterPlugin, request pluginapi.ManagementRequest) pluginapi.ManagementResponse {
+func handleUsagePriceSync(plugin *modelComboPlugin, request pluginapi.ManagementRequest) pluginapi.ManagementResponse {
 	if !strings.EqualFold(request.Method, http.MethodPost) {
 		return usageMethodNotAllowed(http.MethodPost)
 	}
@@ -176,7 +176,7 @@ func handleUsagePriceSync(plugin *modelRouterPlugin, request pluginapi.Managemen
 	}
 	book, err := plugin.syncModelsDev(input)
 	if errors.Is(err, errPriceRevisionConflict) {
-		return modelRouterJSONResponse(http.StatusConflict, map[string]string{"error": "revision_conflict", "message": "model prices changed; reload before synchronizing"})
+		return modelComboJSONResponse(http.StatusConflict, map[string]string{"error": "revision_conflict", "message": "model prices changed; reload before synchronizing"})
 	}
 	if err != nil {
 		message := err.Error()
@@ -189,19 +189,19 @@ func handleUsagePriceSync(plugin *modelRouterPlugin, request pluginapi.Managemen
 		} else if strings.Contains(message, "already running") {
 			status, code = http.StatusConflict, "sync_in_progress"
 		}
-		return modelRouterJSONResponse(status, map[string]string{"error": code, "message": message})
+		return modelComboJSONResponse(status, map[string]string{"error": code, "message": message})
 	}
-	return modelRouterJSONResponse(http.StatusOK, book)
+	return modelComboJSONResponse(http.StatusOK, book)
 }
 
-func handleUsagePreferences(plugin *modelRouterPlugin, request pluginapi.ManagementRequest) pluginapi.ManagementResponse {
+func handleUsagePreferences(plugin *modelComboPlugin, request pluginapi.ManagementRequest) pluginapi.ManagementResponse {
 	switch {
 	case strings.EqualFold(request.Method, http.MethodGet):
 		preferences, err := plugin.store.QueryPreferences()
 		if err != nil {
 			return usageStorageError(err)
 		}
-		return modelRouterJSONResponse(http.StatusOK, preferences)
+		return modelComboJSONResponse(http.StatusOK, preferences)
 	case strings.EqualFold(request.Method, http.MethodPut):
 		var input dashboardPreferences
 		if err := decodeManagementJSON(request.Body, maxManagementRequestBytes, &input); err != nil {
@@ -211,13 +211,13 @@ func handleUsagePreferences(plugin *modelRouterPlugin, request pluginapi.Managem
 		if err != nil {
 			return usageBadRequest(err)
 		}
-		return modelRouterJSONResponse(http.StatusOK, preferences)
+		return modelComboJSONResponse(http.StatusOK, preferences)
 	default:
 		return usageMethodNotAllowed(http.MethodGet, http.MethodPut)
 	}
 }
 
-func handleUsageReset(plugin *modelRouterPlugin, request pluginapi.ManagementRequest) pluginapi.ManagementResponse {
+func handleUsageReset(plugin *modelComboPlugin, request pluginapi.ManagementRequest) pluginapi.ManagementResponse {
 	if !strings.EqualFold(request.Method, http.MethodPost) {
 		return usageMethodNotAllowed(http.MethodPost)
 	}
@@ -233,7 +233,7 @@ func handleUsageReset(plugin *modelRouterPlugin, request pluginapi.ManagementReq
 	if err := plugin.store.ResetUsage(); err != nil {
 		return usageStorageError(err)
 	}
-	return modelRouterJSONResponse(http.StatusOK, map[string]any{"reset": true})
+	return modelComboJSONResponse(http.StatusOK, map[string]any{"reset": true})
 }
 
 func parseUsageFilter(query map[string][]string) (usageFilter, error) {
@@ -312,13 +312,13 @@ func decodeManagementJSON(raw []byte, limit int, destination any) error {
 }
 
 func usageBadRequest(err error) pluginapi.ManagementResponse {
-	return modelRouterJSONResponse(http.StatusBadRequest, map[string]string{"error": "invalid_request", "message": err.Error()})
+	return modelComboJSONResponse(http.StatusBadRequest, map[string]string{"error": "invalid_request", "message": err.Error()})
 }
 
 func usageStorageError(err error) pluginapi.ManagementResponse {
-	return modelRouterJSONResponse(http.StatusInternalServerError, map[string]string{"error": "storage_error", "message": err.Error()})
+	return modelComboJSONResponse(http.StatusInternalServerError, map[string]string{"error": "storage_error", "message": err.Error()})
 }
 
 func usageMethodNotAllowed(methods ...string) pluginapi.ManagementResponse {
-	return modelRouterJSONResponse(http.StatusMethodNotAllowed, map[string]string{"error": "method_not_allowed", "message": "allowed methods: " + strings.Join(methods, ", ")})
+	return modelComboJSONResponse(http.StatusMethodNotAllowed, map[string]string{"error": "method_not_allowed", "message": "allowed methods: " + strings.Join(methods, ", ")})
 }

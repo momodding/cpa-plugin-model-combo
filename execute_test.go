@@ -15,11 +15,19 @@ import (
 type fakeModelHost struct {
 	execute      func(pluginapi.HostModelExecutionRequest) (pluginapi.HostModelExecutionResponse, error)
 	start        func(pluginapi.HostModelExecutionRequest) (pluginapi.HostModelStreamResponse, error)
+	listAuth     func() ([]pluginapi.HostAuthFileEntry, error)
 	reads        map[string][]pluginapi.HostModelStreamReadResponse
 	executeCalls []pluginapi.HostModelExecutionRequest
 	startCalls   []pluginapi.HostModelExecutionRequest
 	emitted      [][]byte
 	closed       []string
+}
+
+func (host *fakeModelHost) ListAuth() ([]pluginapi.HostAuthFileEntry, error) {
+	if host.listAuth == nil {
+		return nil, nil
+	}
+	return host.listAuth()
 }
 
 func (host *fakeModelHost) Execute(request pluginapi.HostModelExecutionRequest) (pluginapi.HostModelExecutionResponse, error) {
@@ -61,7 +69,7 @@ func (host *fakeModelHost) Emit(_ string, payload []byte) error {
 func (*fakeModelHost) ClosePluginStream(string, string) {}
 
 func TestExecuteWithHostFailsOverAndRewritesAlias(t *testing.T) {
-	plugin := testRouterPlugin(testModelRoute("smart", routeStrategyPriority, 30, "provider-a", "provider-b"))
+	plugin := testComboPlugin(testModelRoute("smart", routeStrategyPriority, 30, "provider-a", "provider-b"))
 	host := &fakeModelHost{}
 	host.execute = func(request pluginapi.HostModelExecutionRequest) (pluginapi.HostModelExecutionResponse, error) {
 		if request.Model == "provider-a(high)" {
@@ -79,6 +87,7 @@ func TestExecuteWithHostFailsOverAndRewritesAlias(t *testing.T) {
 		OriginalRequest: []byte(`{"model":"smart(high)","messages":[]}`),
 		Headers:         http.Header{"Authorization": []string{"Bearer client-secret"}, "X-Trace": []string{"trace-id"}},
 		Query:           url.Values{"alt": []string{"json"}},
+		Alt:             "sse",
 	}
 	response, err := plugin.executeWithHost(request, host)
 	if err != nil {
@@ -98,6 +107,9 @@ func TestExecuteWithHostFailsOverAndRewritesAlias(t *testing.T) {
 		if body["model"] != call.Model {
 			t.Fatalf("call %d body model = %v, request model = %q", index, body["model"], call.Model)
 		}
+		if call.EntryProtocol != "openai" || call.ExitProtocol != "openai" || call.Query.Get("alt") != "json" || call.Alt != "sse" {
+			t.Fatalf("call %d protocol forwarding = %#v", index, call)
+		}
 	}
 	if model := jsonModel(t, response.Payload); model != "smart(high)" {
 		t.Fatalf("response model = %q", model)
@@ -107,21 +119,122 @@ func TestExecuteWithHostFailsOverAndRewritesAlias(t *testing.T) {
 	}
 }
 
-// testRouterPluginFromConfig builds a plugin through the real configuration
+func TestExecuteWithHostAdvancesToNextComboGroup(t *testing.T) {
+	plugin := testComboPluginFromConfig(t, `
+combos:
+  - alias: smart
+    groups:
+      - name: primary
+        strategy: priority
+        targets:
+          - model: provider-a
+      - name: fallback
+        strategy: priority
+        targets:
+          - model: provider-b
+`)
+	host := &fakeModelHost{execute: func(request pluginapi.HostModelExecutionRequest) (pluginapi.HostModelExecutionResponse, error) {
+		if request.Model == "provider-a" {
+			return pluginapi.HostModelExecutionResponse{StatusCode: http.StatusServiceUnavailable}, nil
+		}
+		return pluginapi.HostModelExecutionResponse{StatusCode: http.StatusOK, Body: []byte(`{"model":"provider-b"}`)}, nil
+	}}
+	response, err := plugin.executeWithHost(pluginapi.ExecutorRequest{Model: "smart"}, host)
+	if err != nil {
+		t.Fatalf("executeWithHost() error = %v", err)
+	}
+	if len(host.executeCalls) != 2 || host.executeCalls[0].Model != "provider-a" || host.executeCalls[1].Model != "provider-b" {
+		t.Fatalf("ordered group calls = %#v", host.executeCalls)
+	}
+	if response.Metadata["group_name"] != "fallback" || jsonModel(t, response.Payload) != "smart" {
+		t.Fatalf("response = %#v", response)
+	}
+}
+
+// testComboPluginFromConfig builds a plugin through the real configuration
 // parser, so a test can exercise the status lists the plugin is configured with.
-func testRouterPluginFromConfig(t *testing.T, raw string) *modelRouterPlugin {
+func testComboPluginFromConfig(t *testing.T, raw string) *modelComboPlugin {
 	t.Helper()
 	cfg, err := decodeRouterConfig([]byte(raw))
 	if err != nil {
 		t.Fatalf("decodeRouterConfig() error = %v", err)
 	}
-	plugin := testRouterPlugin(cfg.Routes...)
+	plugin := testComboPlugin(cfg.Routes...)
 	plugin.config = cfg
+	plugin.plans = compileCombosWithPools(cfg.Combos, cfg.Resilience, cfg.AccountPools)
+	plugin.comboRuntime = newComboRuntime(nil)
+	plugin.comboRuntime.Sync(plugin.plans)
 	return plugin
 }
 
+func TestExecuteWithHostPinsResolvedAccountID(t *testing.T) {
+	plugin := testComboPluginFromConfig(t, `
+account_pools:
+  pool:
+    accounts:
+      - key: primary
+        auth_name: primary
+        provider: openai
+combos:
+  - alias: smart
+    groups:
+      - name: primary
+        targets:
+          - model: provider-a
+            account_pool: pool
+`)
+	host := &fakeModelHost{
+		listAuth: func() ([]pluginapi.HostAuthFileEntry, error) {
+			return []pluginapi.HostAuthFileEntry{{Name: "primary", Provider: "openai", ID: "opaque-auth-id"}}, nil
+		},
+		execute: func(request pluginapi.HostModelExecutionRequest) (pluginapi.HostModelExecutionResponse, error) {
+			return pluginapi.HostModelExecutionResponse{StatusCode: http.StatusOK, Body: []byte(`{"model":"provider-a"}`)}, nil
+		},
+	}
+	if _, err := plugin.executeWithHost(pluginapi.ExecutorRequest{Model: "smart"}, host); err != nil {
+		t.Fatalf("executeWithHost() error = %v", err)
+	}
+	if len(host.executeCalls) != 1 || host.executeCalls[0].AuthID != "opaque-auth-id" {
+		t.Fatalf("execution requests = %#v", host.executeCalls)
+	}
+}
+
+func TestExecuteWithHostRetriesAnotherPooledAccount(t *testing.T) {
+	plugin := testComboPluginFromConfig(t, `
+resilience: {max_attempts: 2, base_backoff_ms: 0, max_backoff_ms: 0}
+account_pools:
+  pool:
+    strategy: priority
+    accounts:
+      - {key: first, auth_name: first, provider: openai}
+      - {key: second, auth_name: second, provider: openai}
+combos:
+  - alias: smart
+    groups:
+      - name: primary
+        targets: [{model: provider-a, account_pool: pool}]
+`)
+	host := &fakeModelHost{
+		listAuth: func() ([]pluginapi.HostAuthFileEntry, error) {
+			return []pluginapi.HostAuthFileEntry{{Name: "first", Provider: "openai", ID: "id-first"}, {Name: "second", Provider: "openai", ID: "id-second"}}, nil
+		},
+		execute: func(request pluginapi.HostModelExecutionRequest) (pluginapi.HostModelExecutionResponse, error) {
+			if request.AuthID == "id-first" {
+				return pluginapi.HostModelExecutionResponse{StatusCode: http.StatusServiceUnavailable}, nil
+			}
+			return pluginapi.HostModelExecutionResponse{StatusCode: http.StatusOK, Body: []byte(`{"model":"provider-a"}`)}, nil
+		},
+	}
+	if _, err := plugin.executeWithHost(pluginapi.ExecutorRequest{Model: "smart"}, host); err != nil {
+		t.Fatalf("executeWithHost() error = %v", err)
+	}
+	if len(host.executeCalls) != 2 || host.executeCalls[0].AuthID != "id-first" || host.executeCalls[1].AuthID != "id-second" {
+		t.Fatalf("account retry requests = %#v", host.executeCalls)
+	}
+}
+
 func TestExecuteWithHostDoesNotFailOverOnBadRequest(t *testing.T) {
-	plugin := testRouterPlugin(testModelRoute("smart", routeStrategyPriority, 30, "a", "b"))
+	plugin := testComboPlugin(testModelRoute("smart", routeStrategyPriority, 30, "a", "b"))
 	rejected := &fakeModelHost{execute: func(pluginapi.HostModelExecutionRequest) (pluginapi.HostModelExecutionResponse, error) {
 		return pluginapi.HostModelExecutionResponse{StatusCode: 400, Body: []byte(`{"error":"invalid request"}`)}, nil
 	}}
@@ -147,7 +260,7 @@ func TestExecuteWithHostDoesNotFailOverOnBadRequest(t *testing.T) {
 }
 
 func TestExecuteWithHostKeepsRouteAvailableAfterPersistedItemMiss(t *testing.T) {
-	plugin := testRouterPlugin(testModelRoute("smart", routeStrategyPriority, 30, "a", "b"))
+	plugin := testComboPlugin(testModelRoute("smart", routeStrategyPriority, 30, "a", "b"))
 	miss := &fakeModelHost{execute: func(pluginapi.HostModelExecutionRequest) (pluginapi.HostModelExecutionResponse, error) {
 		return pluginapi.HostModelExecutionResponse{StatusCode: 404, Body: []byte(`{"error":"items are not persisted when store is false"}`)}, nil
 	}}
@@ -170,7 +283,7 @@ func TestExecuteWithHostKeepsRouteAvailableAfterPersistedItemMiss(t *testing.T) 
 }
 
 func TestExecuteWithHostFailsOverOnConfiguredStatus(t *testing.T) {
-	plugin := testRouterPluginFromConfig(t, `
+	plugin := testComboPluginFromConfig(t, `
 fallback:
   fallback_on_status: [400]
 routes:
@@ -187,13 +300,13 @@ routes:
 	if len(host.executeCalls) != 2 {
 		t.Fatalf("a 400 listed in fallback_on_status must be retried, calls = %d", len(host.executeCalls))
 	}
-	if statusFromError(err) != 503 || codeFromError(err, "") != "model_route_unavailable" {
+	if statusFromError(err) != 503 || codeFromError(err, "") != "model_combo_unavailable" {
 		t.Fatalf("executeWithHost() error = %v", err)
 	}
 }
 
 func TestExecuteWithHostDoesNotFailOverTerminalError(t *testing.T) {
-	plugin := testRouterPlugin(testModelRoute("smart", routeStrategyPriority, 30, "a", "b"))
+	plugin := testComboPlugin(testModelRoute("smart", routeStrategyPriority, 30, "a", "b"))
 	host := &fakeModelHost{execute: func(pluginapi.HostModelExecutionRequest) (pluginapi.HostModelExecutionResponse, error) {
 		return pluginapi.HostModelExecutionResponse{}, context.Canceled
 	}}
@@ -203,17 +316,32 @@ func TestExecuteWithHostDoesNotFailOverTerminalError(t *testing.T) {
 	}
 }
 
+func TestExecuteWithHostContextCancelsRetryBackoff(t *testing.T) {
+	plugin := testComboPlugin(testModelRoute("smart", routeStrategyPriority, 30, "a", "b"))
+	plugin.plans[0].resilience.BaseBackoffMilliseconds = 1_000
+	plugin.plans[0].resilience.MaxBackoffMilliseconds = 1_000
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	host := &fakeModelHost{execute: func(pluginapi.HostModelExecutionRequest) (pluginapi.HostModelExecutionResponse, error) {
+		return pluginapi.HostModelExecutionResponse{}, statusError{status: http.StatusServiceUnavailable}
+	}}
+	_, err := plugin.executeWithHostContext(ctx, pluginapi.ExecutorRequest{Model: "smart"}, host)
+	if !errors.Is(err, context.Canceled) || len(host.executeCalls) != 1 {
+		t.Fatalf("executeWithHostContext() error = %v, calls = %d", err, len(host.executeCalls))
+	}
+}
+
 func TestExecuteWithHostReturnsUnavailableAfterCandidatesFail(t *testing.T) {
-	plugin := testRouterPlugin(testModelRoute("smart", routeStrategyPriority, 30, "a", "b"))
+	plugin := testComboPlugin(testModelRoute("smart", routeStrategyPriority, 30, "a", "b"))
 	host := &fakeModelHost{execute: func(pluginapi.HostModelExecutionRequest) (pluginapi.HostModelExecutionResponse, error) {
 		return pluginapi.HostModelExecutionResponse{}, statusError{status: 503, message: "provider unavailable"}
 	}}
 	_, err := plugin.executeWithHost(pluginapi.ExecutorRequest{Model: "smart"}, host)
-	if statusFromError(err) != 503 || codeFromError(err, "") != "model_route_unavailable" || len(host.executeCalls) != 2 {
+	if statusFromError(err) != 503 || codeFromError(err, "") != "model_combo_unavailable" || len(host.executeCalls) != 2 {
 		t.Fatalf("executeWithHost() error = %v, calls = %d", err, len(host.executeCalls))
 	}
 	_, err = plugin.executeWithHost(pluginapi.ExecutorRequest{Model: "smart"}, host)
-	if statusFromError(err) != 429 || codeFromError(err, "") != "model_route_cooldown" {
+	if statusFromError(err) != 429 || codeFromError(err, "") != "model_combo_cooldown" {
 		t.Fatalf("cooldown error = %v", err)
 	}
 }
@@ -228,12 +356,12 @@ func TestExecuteWithHostAttemptsWeightedTargetOncePerRequest(t *testing.T) {
 			{Model: "b", Weight: 1},
 		},
 	}
-	plugin := testRouterPlugin(route)
+	plugin := testComboPlugin(route)
 	host := &fakeModelHost{execute: func(request pluginapi.HostModelExecutionRequest) (pluginapi.HostModelExecutionResponse, error) {
 		return pluginapi.HostModelExecutionResponse{}, statusError{status: 503, message: request.Model + " unavailable"}
 	}}
 	_, err := plugin.executeWithHost(pluginapi.ExecutorRequest{Model: "weighted"}, host)
-	if statusFromError(err) != 503 || codeFromError(err, "") != "model_route_unavailable" {
+	if statusFromError(err) != 503 || codeFromError(err, "") != "model_combo_unavailable" {
 		t.Fatalf("executeWithHost() error = %v", err)
 	}
 	if len(host.executeCalls) != 2 || host.executeCalls[0].Model != "a" || host.executeCalls[1].Model != "b" {
@@ -242,7 +370,7 @@ func TestExecuteWithHostAttemptsWeightedTargetOncePerRequest(t *testing.T) {
 }
 
 func TestCountTokensIsExplicitlyUnsupported(t *testing.T) {
-	plugin := testRouterPlugin(testModelRoute("smart", routeStrategyPriority, 30, "a"))
+	plugin := testComboPlugin(testModelRoute("smart", routeStrategyPriority, 30, "a"))
 	_, err := plugin.CountTokens(t.Context(), pluginapi.ExecutorRequest{Model: "smart"})
 	if statusFromError(err) != 501 || codeFromError(err, "") != "model_route_count_tokens_unsupported" {
 		t.Fatalf("CountTokens() error = %v", err)
@@ -265,6 +393,55 @@ func TestSanitizeNestedHeaders(t *testing.T) {
 	}
 }
 
+func TestExecuteWithHostSkipsCapabilityIncompatibleTargets(t *testing.T) {
+	plugin := testComboPluginFromConfig(t, `
+combos:
+  - alias: smart
+    capability_policy: require-declared
+    groups:
+      - name: primary
+        targets:
+          - model: text-only
+          - model: tool-capable
+            capabilities: [tools]
+`)
+	host := &fakeModelHost{execute: func(request pluginapi.HostModelExecutionRequest) (pluginapi.HostModelExecutionResponse, error) {
+		return pluginapi.HostModelExecutionResponse{StatusCode: http.StatusOK, Body: []byte(`{"model":"tool-capable"}`)}, nil
+	}}
+	_, err := plugin.executeWithHost(pluginapi.ExecutorRequest{Model: "smart", OriginalRequest: []byte(`{"model":"smart","tools":[{"type":"function"}]}`)}, host)
+	if err != nil || len(host.executeCalls) != 1 || host.executeCalls[0].Model != "tool-capable" {
+		t.Fatalf("executeWithHost() error = %v, calls = %#v", err, host.executeCalls)
+	}
+
+	plugin = testComboPluginFromConfig(t, `
+combos:
+  - alias: smart
+    capability_policy: require-declared
+    groups:
+      - name: primary
+        targets: [{model: text-only}]
+`)
+	host = &fakeModelHost{}
+	_, err = plugin.executeWithHost(pluginapi.ExecutorRequest{Model: "smart", OriginalRequest: []byte(`{"model":"smart","tools":[{"type":"function"}]}`)}, host)
+	if statusFromError(err) != http.StatusServiceUnavailable || codeFromError(err, "") != "model_combo_unavailable" || len(host.executeCalls) != 0 {
+		t.Fatalf("executeWithHost() error = %v, calls = %d", err, len(host.executeCalls))
+	}
+	plugin = testComboPluginFromConfig(t, `
+combos:
+  - alias: smart
+    groups:
+      - name: primary
+        targets:
+          - model: text-only
+            capabilities: []
+`)
+	host = &fakeModelHost{}
+	_, err = plugin.executeWithHost(pluginapi.ExecutorRequest{Model: "smart", OriginalRequest: []byte(`{"model":"smart","tools":[{"type":"function"}]}`)}, host)
+	if statusFromError(err) != http.StatusServiceUnavailable || codeFromError(err, "") != "model_combo_unavailable" || len(host.executeCalls) != 0 {
+		t.Fatalf("explicit empty capabilities error = %v, calls = %d", err, len(host.executeCalls))
+	}
+}
+
 func jsonModel(t *testing.T, raw []byte) string {
 	t.Helper()
 	var body map[string]any
@@ -273,4 +450,12 @@ func jsonModel(t *testing.T, raw []byte) string {
 	}
 	model, _ := body["model"].(string)
 	return strings.TrimSpace(model)
+}
+
+func TestHostRequestWithAuthPinsExactID(t *testing.T) {
+	request := pluginapi.ExecutorRequest{Headers: http.Header{"X-Test": {"value"}}}
+	got := hostRequestWithAuth(request, executionBody{}, "provider/model", false, "opaque-auth-id")
+	if got.AuthID != "opaque-auth-id" {
+		t.Fatalf("AuthID = %q, want exact pin", got.AuthID)
+	}
 }

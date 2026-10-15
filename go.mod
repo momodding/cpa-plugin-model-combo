@@ -1,4 +1,4 @@
-module github.com/markhuangai/cpa-plugin-model-router
+module github.com/momodding/cpa-model-combo
 
 go 1.26.0
 
