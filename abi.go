@@ -249,7 +249,7 @@ func handleModelComboABIMethod(ctx context.Context, method string, request []byt
 		if err := json.Unmarshal(request, &rpcRequest); err != nil {
 			return nil, fmt.Errorf("decode executor.execute_stream request: %w", err)
 		}
-		return plugin.startStream(rpcRequest, callbackModelHost{hostCallbackID: rpcRequest.HostCallbackID})
+		return plugin.startStream(ctx, rpcRequest, callbackModelHost{hostCallbackID: rpcRequest.HostCallbackID})
 	case pluginabi.MethodExecutorCountTokens:
 		_, err := plugin.CountTokens(ctx, pluginapi.ExecutorRequest{})
 		return errorForExecution(err, "model_route_count_tokens_unsupported"), nil

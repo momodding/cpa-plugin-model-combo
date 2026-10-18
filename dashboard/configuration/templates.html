@@ -60,3 +60,141 @@
     <button class="danger-button" type="button" data-action="remove-target">Remove</button>
   </div>
 </template>
+
+<template id="combo-template">
+  <article class="combo-card">
+    <aside class="combo-rail"><span class="ordinal"></span><span class="rail-label">Combo</span></aside>
+    <div class="combo-body">
+      <div class="combo-top">
+        <div class="field">
+          <label>Combo alias</label>
+          <input type="text" data-field="alias" placeholder="auto" autocomplete="off">
+          <small>The name clients send in the model field.</small>
+        </div>
+        <div class="combo-actions">
+          <button class="icon-button" type="button" data-action="up" aria-label="Move combo up">↑</button>
+          <button class="icon-button" type="button" data-action="down" aria-label="Move combo down">↓</button>
+          <button class="danger-button" type="button" data-action="remove">Remove</button>
+        </div>
+      </div>
+
+      <div class="field">
+        <label>Groups</label>
+        <button class="secondary" type="button" data-action="add-group" aria-label="Add group to this combo">Add group</button>
+      </div>
+      <div class="groups"></div>
+    </div>
+  </article>
+</template>
+
+<template id="combo-group-template">
+  <article class="combo-group-card">
+    <aside class="group-rail"><span class="ordinal"></span><span class="rail-label">Group</span></aside>
+    <div class="group-body">
+      <div class="field-grid">
+        <div class="field">
+          <label>Strategy</label>
+          <select data-field="strategy"><option value="priority">Priority order</option><option value="round-robin">Round robin</option></select>
+        </div>
+        <div class="field">
+          <label>Fallback</label>
+          <input type="text" data-field="fallback" placeholder="optional" autocomplete="off">
+          <small>Fallback model if all fail.</small>
+        </div>
+      </div>
+
+      <div class="targets">
+        <div class="targets-head">
+          <span class="target-label">Targets</span>
+          <button class="secondary" type="button" data-action="add-target" aria-label="Add target to this group">Add target</button>
+        </div>
+        <div class="target-list"></div>
+      </div>
+
+      <div class="group-actions">
+        <button class="icon-button" type="button" data-action="up" aria-label="Move group up">↑</button>
+        <button class="icon-button" type="button" data-action="down" aria-label="Move group down">↓</button>
+        <button class="danger-button" type="button" data-action="remove">Remove group</button>
+      </div>
+    </div>
+  </article>
+</template>
+
+<template id="combo-target-template">
+  <div class="target-row" data-target-index="0">
+    <span class="target-number"></span>
+    <div class="target-fields">
+      <div class="field">
+        <label>Model</label>
+        <select data-target-field="model" autocomplete="off"></select>
+      </div>
+      <div class="field" data-target-help>
+        <label>Weight</label>
+        <input type="number" data-target-field="weight" min="1" step="1" inputmode="numeric">
+        <small>For round-robin: 1–1000000.</small>
+      </div>
+    </div>
+    <div class="target-actions">
+      <button class="icon-button" type="button" data-action="up" aria-label="Move target up">↑</button>
+      <button class="icon-button" type="button" data-action="down" aria-label="Move target down">↓</button>
+      <button class="danger-button" type="button" data-action="remove">Remove</button>
+    </div>
+  </div>
+</template>
+
+<template id="account-pool-template">
+  <article class="account-pool-card">
+    <aside class="pool-rail"><span class="ordinal"></span><span class="rail-label">Pool</span></aside>
+    <div class="pool-body">
+      <div class="pool-top">
+        <div class="field">
+          <label>Pool name</label>
+          <input type="text" data-field="name" placeholder="pool" autocomplete="off">
+        </div>
+        <div class="pool-actions">
+          <button class="icon-button" type="button" data-action="up" aria-label="Move pool up">↑</button>
+          <button class="icon-button" type="button" data-action="down" aria-label="Move pool down">↓</button>
+          <button class="danger-button" type="button" data-action="remove">Remove</button>
+        </div>
+      </div>
+
+      <div class="field">
+        <label>Strategy</label>
+        <select data-field="strategy"><option value="priority">Priority</option><option value="weighted_round_robin">Weighted round-robin</option></select>
+      </div>
+
+      <div class="accounts">
+        <div class="accounts-head">
+          <span class="accounts-label">Accounts</span>
+          <button class="secondary" type="button" data-action="add-account" aria-label="Add account to this pool">Add account</button>
+        </div>
+        <div class="account-list"></div>
+      </div>
+    </div>
+  </article>
+</template>
+
+<template id="account-entry-template">
+  <div class="account-entry" data-account-index="0">
+    <span class="account-number"></span>
+    <div class="account-fields">
+      <div class="field">
+        <label>Key</label>
+        <input type="text" data-account-field="key" placeholder="account_id" autocomplete="off">
+      </div>
+      <div class="field">
+        <label>Auth name</label>
+        <input type="text" data-account-field="auth_name" placeholder="auth.json" autocomplete="off">
+        <small>CPA auth metadata filename, e.g. primary.json.</small>
+      </div>
+      <div class="field">
+        <label>Provider</label>
+        <input type="text" data-account-field="provider" placeholder="gcloud" autocomplete="off">
+        <small>Provider name, e.g. gcloud, azure.</small>
+      </div>
+    </div>
+    <div class="account-actions">
+      <button class="danger-button" type="button" data-action="remove">Remove</button>
+    </div>
+  </div>
+</template>

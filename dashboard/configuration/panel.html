@@ -30,6 +30,24 @@
         <button id="add-route" class="secondary" type="button">Add route</button>
       </div>
       <section id="routes" class="routes" aria-live="polite"></section>
+
+      <div class="section-head">
+        <div class="section-title">
+          <h2>Combo groups <small>(visual)</small></h2>
+          <span id="combo-count" class="count">0 combos</span>
+        </div>
+        <button id="add-combo" class="secondary" type="button">Add combo</button>
+      </div>
+      <section id="combos-list" class="combos-list" aria-live="polite"></section>
+
+      <div class="section-head">
+        <div class="section-title">
+          <h2>Account pools <small>(visual)</small></h2>
+          <span id="pool-count" class="count">0 pools</span>
+        </div>
+        <button id="add-pool" class="secondary" type="button">Add pool</button>
+      </div>
+      <section id="account-pools-list" class="account-pools-list" aria-live="polite"></section>
       <section class="combo-editor">
         <label for="combos-json">Advanced combo definitions</label>
         <textarea id="combos-json" rows="10" spellcheck="false" placeholder='[{"alias":"chat","groups":[{"strategy":"priority","targets":[{"model":"provider/model"}]}]}]'></textarea>

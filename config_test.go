@@ -455,6 +455,27 @@ combos: [{alias: DUPLICATE, groups: [{name: primary, models: [model-b]}]}]
 	}
 }
 
+func TestDecodeRouterConfigSessionAffinityDisabledByDefault(t *testing.T) {
+	config, err := decodeRouterConfig([]byte(`combos: [{alias: demo, groups: [{name: primary, models: [model-a]}]}]`))
+	if err != nil {
+		t.Fatalf("decodeRouterConfig() error = %v", err)
+	}
+	if len(config.Combos) != 1 {
+		t.Fatalf("combo count = %d", len(config.Combos))
+	}
+}
+
+func TestDecodeRouterConfigRejectsEnabledSessionAffinity(t *testing.T) {
+	_, err := decodeRouterConfig([]byte(`combos: [{alias: demo, session_affinity: {enabled: true}, groups: [{name: primary, models: [model-a]}]}]`))
+	if err == nil {
+		t.Fatal("decodeRouterConfig() accepted enabled session affinity")
+	}
+	const want = "session_affinity.enabled requires a reliable caller session ID, but CPA v7.3.9 ExecutorRequest lacks one"
+	if !strings.Contains(err.Error(), want) {
+		t.Fatalf("decodeRouterConfig() error = %q, want %q", err, want)
+	}
+}
+
 func TestDecodeRouterConfigDefaultsCapabilityPolicy(t *testing.T) {
 	config, err := decodeRouterConfig([]byte(`combos: [{alias: demo, groups: [{name: primary, models: [model-a]}]}]`))
 	if err != nil {

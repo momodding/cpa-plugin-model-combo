@@ -16,6 +16,10 @@ type callbackModelHost struct {
 	rawCall        hostRawCaller
 }
 
+type hostAuthListRPC struct {
+	Files *json.RawMessage `json:"files"`
+}
+
 type hostModelExecutionRPC struct {
 	pluginapi.HostModelExecutionRequest
 	HostCallbackID string `json:"host_callback_id,omitempty"`
@@ -47,9 +51,26 @@ func (host callbackModelHost) ListAuth() ([]pluginapi.HostAuthFileEntry, error) 
 	if err != nil {
 		return nil, err
 	}
-	var entries []pluginapi.HostAuthFileEntry
-	if err := json.Unmarshal(result, &entries); err != nil {
+	var response hostAuthListRPC
+	if err := json.Unmarshal(result, &response); err != nil {
 		return nil, fmt.Errorf("decode host.auth.list response: %w", err)
+	}
+	if response.Files == nil || strings.TrimSpace(string(*response.Files)) == "null" {
+		return nil, fmt.Errorf("decode host.auth.list response: missing files")
+	}
+	var entries []pluginapi.HostAuthFileEntry
+	if err := json.Unmarshal(*response.Files, &entries); err != nil {
+		return nil, fmt.Errorf("decode host.auth.list response files: %w", err)
+	}
+	seen := make(map[string]struct{}, len(entries))
+	for _, entry := range entries {
+		if entry.ID == "" || strings.TrimSpace(entry.ID) != entry.ID {
+			return nil, fmt.Errorf("decode host.auth.list response: missing auth id")
+		}
+		if _, duplicate := seen[entry.ID]; duplicate {
+			return nil, fmt.Errorf("decode host.auth.list response: duplicate auth id %q", entry.ID)
+		}
+		seen[entry.ID] = struct{}{}
 	}
 	return entries, nil
 }

@@ -12,7 +12,7 @@ const CPA_STORAGE_SALT='cli-proxy-api-webui::secure-storage';
 const SESSION_KEY='cpa_model_combo_key';
 const REJECTED_KEY='cpa_model_combo_rejected_key';
 const REJECTED_AT='cpa_model_combo_rejected_at';
-const state={enabled:true,priority:'0',routes:[],combosDraft:'',accountPoolsDraft:'',availableModels:[],catalogLoaded:false,catalogError:'',baselineSnapshot:null,dirty:false,busy:false};
+const state={enabled:true,priority:'0',routes:[],combos:[],account_pools:{},modelCatalog:[],combosDraft:'',accountPoolsDraft:'',availableModels:[],catalogLoaded:false,catalogError:'',baselineSnapshot:null,dirty:false,busy:false};
 const usageState={
   active:false,initialized:false,preferencesLoaded:false,loading:false,generation:0,controller:null,timer:0,filterTimer:0,displayedRange:null,displayedFilterKey:'',pendingFullRefresh:false,preferenceTimer:0,preferenceSaveGeneration:0,preferenceSaveInFlight:false,preferenceSaveQueued:false,resizeTimer:0,
   overview:null,groupPage:null,requestPage:null,range:'24h',granularity:'hour',customFrom:'',customTo:'',attribution:'',routerModel:'',providerModel:'',source:'',serviceTier:'',result:'',pricingDialogGeneration:0,pricingWriteInFlight:null,

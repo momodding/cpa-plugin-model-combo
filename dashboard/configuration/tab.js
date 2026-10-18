@@ -11,8 +11,8 @@ function configurationSnapshot(){
   return JSON.stringify({
     enabled:Boolean(state.enabled),
     priority:canonicalIntegerDraft(state.priority),
-    combos:state.combosDraft.trim(),
-    accountPools:state.accountPoolsDraft.trim(),
+    combos:JSON.stringify(state.combos || []),
+    accountPools:JSON.stringify(state.account_pools || {}),
     routes:state.routes.map(route=>({
       alias:String(route.alias===undefined||route.alias===null?'':route.alias).trim(),
       strategy:String(route.strategy===undefined||route.strategy===null?'':route.strategy),
@@ -186,7 +186,10 @@ async function loadConfiguration(){
     priorityEl.value=state.priority;
     combosEl.value=state.combosDraft;
     accountPoolsEl.value=state.accountPoolsDraft;
-    updateModelStatus();
+    state.combos = parseComboArray(config.combos);
+    state.account_pools = parseAccountPools(config.account_pools);
+    renderCombos();
+    renderAccountPools();
     renderRoutes();
     workspaceEl.hidden=false;
     captureConfigurationBaseline();
@@ -458,18 +461,8 @@ async function saveConfiguration(){
   if(state.busy||!state.dirty)return;
   const routes=serializeRoutes();
   const errors=validateClient(routes);
-  let combos=[];
-  const comboSource=state.combosDraft.trim();
-  if(comboSource){
-    try{combos=JSON.parse(comboSource)}catch(error){showToast('Advanced combo definitions must be valid JSON: '+error.message,'error');return}
-    if(!Array.isArray(combos)){showToast('Advanced combo definitions must be a JSON array.','error');return}
-  }
-  let accountPools={};
-  const accountPoolSource=state.accountPoolsDraft.trim();
-  if(accountPoolSource){
-    try{accountPools=JSON.parse(accountPoolSource)}catch(error){showToast('Account pools must be valid JSON: '+error.message,'error');return}
-    if(!accountPools||Array.isArray(accountPools)||typeof accountPools!=='object'){showToast('Account pools must be a JSON object.','error');return}
-  }
+  let combos = serializeComboArray();
+  let accountPools = serializeAccountPools();
   if(errors.length){showToast(errors[0]+(errors.length>1?' '+(errors.length-1)+' more issue(s).':''),'error');return}
   const submittedSnapshot=configurationSnapshot();
   setBusy(true);
@@ -489,13 +482,551 @@ async function saveConfiguration(){
 }
 
 function initializeConfigurationEvents() {
-  connectEl.addEventListener('click',loadConfiguration);
-  keyEl.addEventListener('keydown',event=>{if(event.key==='Enter')loadConfiguration()});
-  enabledEl.addEventListener('change',()=>{state.enabled=enabledEl.checked;refreshDirty()});
-  priorityEl.addEventListener('input',()=>{state.priority=priorityEl.value;refreshDirty()});
-  addRouteEl.addEventListener('click',addRoute);
-  combosEl.addEventListener('input',()=>{state.combosDraft=combosEl.value;refreshDirty()});
-  accountPoolsEl.addEventListener('input',()=>{state.accountPoolsDraft=accountPoolsEl.value;refreshDirty()});
-  reloadEl.addEventListener('click',()=>{if(!state.dirty||window.confirm('Discard unsaved changes and reload from CPA?'))loadConfiguration()});
-  saveEl.addEventListener('click',saveConfiguration);
+  // Routes
+  addRouteEl.addEventListener('click', addRoute);
+  saveEl.addEventListener('click', saveConfiguration);
+
+  // Combos
+  const addComboEl = document.getElementById('add-combo');
+  if (addComboEl) {
+    addComboEl.addEventListener('click', () => {
+      addCombo();
+      syncComboToRaw();
+    });
+  }
+
+  const rawCombosEl = document.getElementById('combos-json');
+  if (rawCombosEl) {
+    rawCombosEl.addEventListener('input', () => {
+      try {
+        const parsed = JSON.parse(rawCombosEl.value);
+        if (!Array.isArray(parsed)) {
+          throw new Error('Advanced combo definitions must be a JSON array.');
+        }
+        state.combos = parseComboArray(parsed);
+        renderCombos();
+        syncComboRawStatus('ok');
+      } catch (e) {
+        syncComboRawStatus('parse-error', e.message);
+      }
+    });
+  }
+  // Account pools
+  const addPoolEl = document.getElementById('add-pool');
+  if (addPoolEl) {
+    addPoolEl.addEventListener('click', () => {
+      addPool();
+      syncPoolToRaw();
+    });
+  }
+
+  const rawPoolsEl = document.getElementById('account-pools-json');
+  if (rawPoolsEl) {
+    rawPoolsEl.addEventListener('input', () => {
+      try {
+        const parsed = JSON.parse(rawPoolsEl.value);
+        state.account_pools = parseAccountPools(parsed);
+        renderAccountPools();
+        syncPoolRawStatus('ok');
+      } catch (e) {
+        syncPoolRawStatus('parse-error', e.message);
+      }
+    });
+  }
+
+  // Input change handlers for combo visual editor
+  document.getElementById('combos-list')?.addEventListener('input', (e) => {
+    if (e.target.hasAttribute('data-field') || e.target.hasAttribute('data-target-field')) {
+      syncComboToRaw();
+    }
+  });
+
+  document.getElementById('combos-list')?.addEventListener('change', (e) => {
+    if (e.target.hasAttribute('data-field') || e.target.hasAttribute('data-target-field')) {
+      syncComboToRaw();
+    }
+  });
+
+  // Input change handlers for account pool visual editor
+  document.getElementById('account-pools-list')?.addEventListener('input', (e) => {
+    if (e.target.hasAttribute('data-field') || e.target.hasAttribute('data-account-field')) {
+      syncPoolToRaw();
+    }
+  });
+
+  document.getElementById('account-pools-list')?.addEventListener('change', (e) => {
+    if (e.target.hasAttribute('data-field') || e.target.hasAttribute('data-account-field')) {
+      syncPoolToRaw();
+    }
+  });
+}
+
+function syncComboToRaw() {
+  const rawEl = document.getElementById('combos-json');
+  if (rawEl) {
+    try {
+      rawEl.value = JSON.stringify(serializeComboArray(), null, 2);
+      syncComboRawStatus('ok');
+      refreshDirty();
+    } catch (e) {
+      syncComboRawStatus('serialize-error', e.message);
+    }
+  }
+}
+
+function syncPoolToRaw() {
+  const rawEl = document.getElementById('account-pools-json');
+  if (rawEl) {
+    try {
+      rawEl.value = JSON.stringify(serializeAccountPools(), null, 2);
+      syncPoolRawStatus('ok');
+      refreshDirty();
+    } catch (e) {
+      syncPoolRawStatus('serialize-error', e.message);
+    }
+  }
+}
+
+function syncComboRawStatus(status, message) {
+  const btn = document.getElementById('combo-sync-status');
+  if (btn) {
+    if (status === 'ok') {
+      btn.textContent = '✓ Synced';
+      btn.className = 'secondary';
+    } else {
+      btn.textContent = '⚠ ' + status;
+      btn.className = 'secondary danger';
+      console.warn('Combo sync:', message);
+    }
+  }
+}
+
+function syncPoolRawStatus(status, message) {
+  const btn = document.getElementById('pool-sync-status');
+  if (btn) {
+    if (status === 'ok') {
+      btn.textContent = '✓ Synced';
+      btn.className = 'secondary';
+    } else {
+      btn.textContent = '⚠ ' + status;
+      btn.className = 'secondary danger';
+      console.warn('Pool sync:', message);
+    }
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Combo visual editor
+// ─────────────────────────────────────────────────────────────────────────────
+
+function parseComboArray(value) {
+  if (!Array.isArray(value)) return [];
+  return value.map((combo, i) => {
+    if (typeof combo !== 'object' || combo === null) {
+      return { __raw: {}, alias: `combo-${i}`, groups: [] };
+    }
+    return {
+      __raw: combo,
+      alias: String(combo.alias || `combo-${i}`),
+      groups: Array.isArray(combo.groups) ? combo.groups.map((g, gi) => ({
+        __raw: g,
+        name: String(g.name || `group-${gi}`),
+        strategy: String(g.strategy || 'priority'),
+        cooldown_seconds: g.cooldown_seconds !== undefined ? String(g.cooldown_seconds) : '',
+        targets: Array.isArray(g.targets) ? g.targets.map((t, ti) => ({
+          __raw: t,
+          model: String(t.model || ''),
+          weight: t.weight !== undefined ? String(t.weight) : '1',
+          account_pool: String(t.account_pool || ''),
+          capabilities: Array.isArray(t.capabilities) ? t.capabilities.join(', ') : ''
+        })) : [{ __raw: {}, model: '', weight: '1', account_pool: '', capabilities: '' }]
+      })) : []
+    };
+  });
+}
+
+function serializeComboArray() {
+  const combos = [];
+  document.querySelectorAll('#combos-list .combo-card').forEach(card => {
+    const alias = card.querySelector('[data-field="alias"]')?.value?.trim() || 'combo';
+    const groups = [];
+    card.querySelectorAll('.combo-group-card').forEach(groupCard => {
+      const name = groupCard.querySelector('[data-field="name"]')?.value?.trim() || 'group';
+      const strategy = groupCard.querySelector('[data-field="strategy"]')?.value || 'priority';
+      const cooldown_seconds = groupCard.querySelector('[data-field="cooldown_seconds"]')?.value?.trim();
+      const targets = [];
+      groupCard.querySelectorAll('.target-row').forEach(row => {
+        const model = row.querySelector('[data-target-field="model"]')?.value?.trim();
+        const weight = row.querySelector('[data-target-field="weight"]')?.value;
+        const account_pool = row.querySelector('[data-target-field="account_pool"]')?.value?.trim();
+        const capabilities = row.querySelector('[data-target-field="capabilities"]')?.value?.trim();
+        if (model) {
+          const target = { ...(row.__raw || {}), model, weight: weight ? parseInt(weight) || 1 : 1 };
+          if (account_pool) target.account_pool = account_pool;
+          else delete target.account_pool;
+          if (capabilities) target.capabilities = capabilities.split(',').map(c => c.trim()).filter(Boolean);
+          else delete target.capabilities;
+          targets.push(target);
+        }
+      });
+      if (targets.length) {
+        const group = { ...(groupCard.__raw || {}), name, strategy, targets };
+        if (cooldown_seconds) group.cooldown_seconds = parseInt(cooldown_seconds) || undefined;
+        else delete group.cooldown_seconds;
+        groups.push(group);
+      }
+    });
+    if (groups.length) {
+      combos.push({ ...(card.__raw || {}), alias, groups });
+    }
+  });
+  return combos;
+}
+
+function renderComboCard(combo, index) {
+  const card = document.importNode(
+    document.getElementById('combo-template').content,
+    true
+  ).querySelector('.combo-card');
+  card.__raw = combo.__raw || {};
+  card.querySelector('[data-field="alias"]').value = combo.alias;
+
+  const groupsContainer = card.querySelector('.groups');
+  combo.groups.forEach((group, gi) => {
+    renderComboGroup(groupsContainer, group, gi, combo.groups.length);
+  });
+
+  const ordinal = card.querySelector('.ordinal');
+  ordinal.textContent = index + 1;
+
+  const handlers = {
+    up: () => moveCombo(index, -1),
+    down: () => moveCombo(index, 1),
+    remove: () => removeCombo(index),
+    'add-group': () => addGroupToCombo(index)
+  };
+
+  card.querySelectorAll('[data-action]').forEach(btn => {
+    const action = btn.getAttribute('data-action');
+    if (handlers[action]) {
+      btn.addEventListener('click', handlers[action]);
+    }
+  });
+
+  return card;
+}
+
+function renderComboGroup(container, group, groupIndex, groupCount) {
+  const groupCard = document.importNode(
+    document.getElementById('combo-group-template').content,
+    true
+  ).querySelector('.combo-group-card');
+
+  groupCard.__raw = group.__raw || {};
+  groupCard.querySelector('[data-field="name"]').value = group.name || '';
+  groupCard.querySelector('[data-field="cooldown_seconds"]').value = group.cooldown_seconds || '';
+  groupCard.querySelector('[data-field="strategy"]').value = group.strategy || '';
+  groupCard.querySelector('.ordinal').textContent = groupIndex + 1;
+
+  const targetList = groupCard.querySelector('.target-list');
+  group.targets.forEach((target, ti) => {
+    renderComboTarget(targetList, target, ti, group.targets.length, groupIndex);
+  });
+
+  const comboIndex = Array.from(document.querySelectorAll('#combos-list .combo-card')).indexOf(
+    container.closest('.combo-card')
+  );
+
+  const handlers = {
+    up: () => moveGroup(comboIndex, groupIndex, -1),
+    down: () => moveGroup(comboIndex, groupIndex, 1),
+    remove: () => removeGroup(comboIndex, groupIndex),
+    'add-target': () => addTargetToGroup(comboIndex, groupIndex)
+  };
+
+  groupCard.querySelectorAll('[data-action]').forEach(btn => {
+    const action = btn.getAttribute('data-action');
+    if (handlers[action]) {
+      btn.addEventListener('click', handlers[action]);
+    }
+  });
+
+  container.appendChild(groupCard);
+}
+
+function renderComboTarget(container, target, targetIndex, targetCount, groupIndex) {
+  const row = document.importNode(
+    document.getElementById('combo-target-template').content,
+    true
+  ).querySelector('.target-row');
+
+  row.__raw = target.__raw || {};
+  row.querySelector('.target-number').textContent = targetIndex + 1;
+  row.querySelector('[data-target-field="model"]').value = target.model;
+  row.querySelector('[data-target-field="weight"]').value = target.weight;
+  row.querySelector('[data-target-field="account_pool"]').value = target.account_pool || '';
+  row.querySelector('[data-target-field="capabilities"]').value = (target.capabilities || []).join(', ');
+
+  populateModelSelect(row.querySelector('[data-target-field="model"]'));
+
+  const comboIndex = Array.from(document.querySelectorAll('#combos-list .combo-card')).indexOf(
+    container.closest('.combo-card')
+  );
+
+  const handlers = {
+    up: () => moveComboTarget(comboIndex, groupIndex, targetIndex, -1),
+    down: () => moveComboTarget(comboIndex, groupIndex, targetIndex, 1),
+    remove: () => removeComboTarget(comboIndex, groupIndex, targetIndex)
+  };
+
+  row.querySelectorAll('[data-action]').forEach(btn => {
+    const action = btn.getAttribute('data-action');
+    if (handlers[action]) {
+      btn.addEventListener('click', handlers[action]);
+    }
+  });
+
+  container.appendChild(row);
+}
+
+function populateModelSelect(select) {
+  const currentValue = select.value;
+  while (select.firstChild) {
+    select.removeChild(select.firstChild);
+  }
+  select.appendChild(new Option('— Select model —', ''));
+  state.modelCatalog.forEach(model => {
+    select.appendChild(new Option(model.id, model.id));
+  });
+  select.value = currentValue;
+}
+
+function renderCombos() {
+  const list = document.getElementById('combos-list');
+  while (list.firstChild) {
+    list.removeChild(list.firstChild);
+  }
+  state.combos.forEach((combo, i) => {
+    list.appendChild(renderComboCard(combo, i));
+  });
+  document.getElementById('combo-count').textContent = state.combos.length + (state.combos.length === 1 ? ' combo' : ' combos');
+}
+
+function addCombo() {
+  state.combos.push({ alias: 'combo-' + (state.combos.length + 1), groups: [] });
+  renderCombos();
+  refreshDirty();
+}
+
+function moveCombo(index, delta) {
+  if (index + delta < 0 || index + delta >= state.combos.length) return;
+  [state.combos[index], state.combos[index + delta]] = [state.combos[index + delta], state.combos[index]];
+  renderCombos();
+  refreshDirty();
+}
+
+function removeCombo(index) {
+  state.combos.splice(index, 1);
+  renderCombos();
+  refreshDirty();
+}
+
+function addGroupToCombo(comboIndex) {
+  state.combos[comboIndex].groups.push({ strategy: 'priority', fallback: '', targets: [{ model: '', weight: '1' }] });
+  renderCombos();
+  refreshDirty();
+}
+
+function moveGroup(comboIndex, groupIndex, delta) {
+  const groups = state.combos[comboIndex].groups;
+  if (groupIndex + delta < 0 || groupIndex + delta >= groups.length) return;
+  [groups[groupIndex], groups[groupIndex + delta]] = [groups[groupIndex + delta], groups[groupIndex]];
+  renderCombos();
+  refreshDirty();
+}
+
+function removeGroup(comboIndex, groupIndex) {
+  state.combos[comboIndex].groups.splice(groupIndex, 1);
+  renderCombos();
+  refreshDirty();
+}
+
+function addTargetToGroup(comboIndex, groupIndex) {
+  state.combos[comboIndex].groups[groupIndex].targets.push({ model: '', weight: '1' });
+  renderCombos();
+  refreshDirty();
+}
+
+function moveComboTarget(comboIndex, groupIndex, targetIndex, delta) {
+  const targets = state.combos[comboIndex].groups[groupIndex].targets;
+  if (targetIndex + delta < 0 || targetIndex + delta >= targets.length) return;
+  [targets[targetIndex], targets[targetIndex + delta]] = [targets[targetIndex + delta], targets[targetIndex]];
+  renderCombos();
+  refreshDirty();
+}
+
+function removeComboTarget(comboIndex, groupIndex, targetIndex) {
+  state.combos[comboIndex].groups[groupIndex].targets.splice(targetIndex, 1);
+  renderCombos();
+  refreshDirty();
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Account pool visual editor
+// ─────────────────────────────────────────────────────────────────────────────
+
+function parseAccountPools(value) {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    return {};
+  }
+  const pools = {};
+  Object.entries(value).forEach(([name, pool]) => {
+    if (typeof pool !== 'object' || pool === null) return;
+    pools[name] = {
+      __raw: pool,
+      strategy: String(pool.strategy || 'priority'),
+      accounts: Array.isArray(pool.accounts) ? pool.accounts.map((acc, i) => ({
+        __raw: acc,
+        key: String(acc.key || ''),
+        auth_name: String(acc.auth_name || ''),
+        provider: String(acc.provider || '')
+      })) : []
+    };
+  });
+  return pools;
+}
+
+function serializeAccountPools() {
+  const pools = {};
+  document.querySelectorAll('#account-pools-list .account-pool-card').forEach(card => {
+    const name = card.querySelector('[data-field="name"]')?.value?.trim() || 'pool';
+    const strategy = card.querySelector('[data-field="strategy"]')?.value || 'priority';
+    const accounts = [];
+    card.querySelectorAll('.account-entry').forEach(entry => {
+      const key = entry.querySelector('[data-account-field="key"]')?.value?.trim();
+      const auth_name = entry.querySelector('[data-account-field="auth_name"]')?.value?.trim();
+      const provider = entry.querySelector('[data-account-field="provider"]')?.value?.trim();
+        accounts.push({ ...(entry.__raw || {}), key, auth_name, provider });
+    });
+    if (accounts.length || name) {
+      pools[name] = { ...(card.__raw || {}), strategy, accounts };
+    }
+  });
+  return pools;
+}
+
+function renderAccountPoolCard(poolName, pool, index) {
+  const card = document.importNode(
+    document.getElementById('account-pool-template').content,
+    true
+  ).querySelector('.account-pool-card');
+
+  card.__raw = pool.__raw || {};
+  card.querySelector('[data-field="name"]').value = poolName;
+  card.querySelector('[data-field="strategy"]').value = pool.strategy;
+  card.querySelector('.ordinal').textContent = index + 1;
+
+  const accountList = card.querySelector('.account-list');
+  pool.accounts.forEach((account, ai) => {
+    renderAccountEntry(accountList, account, ai, pool.accounts.length, index);
+  });
+
+  const handlers = {
+    up: () => movePool(index, -1),
+    down: () => movePool(index, 1),
+    remove: () => removePool(index),
+    'add-account': () => addAccountToPool(index)
+  };
+
+  card.querySelectorAll('[data-action]').forEach(btn => {
+    const action = btn.getAttribute('data-action');
+    if (handlers[action]) {
+      btn.addEventListener('click', handlers[action]);
+    }
+  });
+
+  return card;
+}
+
+function renderAccountEntry(container, account, accountIndex, accountCount, poolIndex) {
+  const entry = document.importNode(
+    document.getElementById('account-entry-template').content,
+    true
+  ).querySelector('.account-entry');
+
+  entry.__raw = account.__raw || {};
+  entry.setAttribute('data-account-index', accountIndex);
+  entry.querySelector('.account-number').textContent = accountIndex + 1;
+  entry.querySelector('[data-account-field="key"]').value = account.key;
+  entry.querySelector('[data-account-field="auth_name"]').value = account.auth_name;
+  entry.querySelector('[data-account-field="provider"]').value = account.provider;
+
+  entry.querySelectorAll('[data-action]').forEach(btn => {
+    if (btn.getAttribute('data-action') === 'remove') {
+      btn.addEventListener('click', () => removeAccountFromPool(poolIndex, accountIndex));
+    }
+  });
+
+  container.appendChild(entry);
+}
+
+function renderAccountPools() {
+  const list = document.getElementById('account-pools-list');
+  while (list.firstChild) {
+    list.removeChild(list.firstChild);
+  }
+  const poolNames = Object.keys(state.account_pools);
+  poolNames.forEach((name, i) => {
+    list.appendChild(renderAccountPoolCard(name, state.account_pools[name], i));
+  });
+  document.getElementById('pool-count').textContent = poolNames.length + (poolNames.length === 1 ? ' pool' : ' pools');
+}
+
+function addPool() {
+  const name = 'pool-' + (Object.keys(state.account_pools).length + 1);
+  state.account_pools[name] = { strategy: 'priority', accounts: [] };
+  renderAccountPools();
+  refreshDirty();
+}
+
+function movePool(index, delta) {
+  const names = Object.keys(state.account_pools);
+  if (index + delta < 0 || index + delta >= names.length) return;
+  const newNames = [...names];
+  [newNames[index], newNames[index + delta]] = [newNames[index + delta], newNames[index]];
+  const newPools = {};
+  newNames.forEach(name => {
+    newPools[name] = state.account_pools[name];
+  });
+  state.account_pools = newPools;
+  renderAccountPools();
+  refreshDirty();
+}
+
+function removePool(index) {
+  const names = Object.keys(state.account_pools);
+  delete state.account_pools[names[index]];
+  renderAccountPools();
+  refreshDirty();
+}
+
+function addAccountToPool(poolIndex) {
+  const names = Object.keys(state.account_pools);
+  state.account_pools[names[poolIndex]].accounts.push({ key: '', auth_name: '', provider: '' });
+  renderAccountPools();
+  refreshDirty();
+}
+
+function removeAccountFromPool(poolIndex, accountIndex) {
+  const names = Object.keys(state.account_pools);
+  state.account_pools[names[poolIndex]].accounts.splice(accountIndex, 1);
+  renderAccountPools();
+  refreshDirty();
+}
+
+// Initialize events when DOM is ready
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', initializeConfigurationEvents);
+} else {
+  initializeConfigurationEvents();
 }

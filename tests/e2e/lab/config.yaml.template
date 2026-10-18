@@ -1,0 +1,45 @@
+# CLIProxyAPI v7.3.9 disposable E2E configuration.
+host: "127.0.0.1"
+port: 8317
+auth-dir: "/root/.cli-proxy-api"
+api-keys: ["@API_KEY@"]
+request-retry: 0
+usage-statistics-enabled: true
+remote-management:
+  allow-remote: false
+  secret-key: "@MANAGEMENT_KEY@"
+  disable-control-panel: false
+plugins:
+  enabled: true
+  dir: "/CLIProxyAPI/plugins"
+  configs:
+    model-combo:
+      enabled: true
+      priority: 100
+      retention_days: 1
+      routes:
+        - alias: e2e-priority-alias
+          strategy: priority
+          cooldown_seconds: 60
+          targets:
+            - model: fake/fake-primary
+              weight: 1
+            - model: fake/fake-secondary
+              weight: 1
+        - alias: e2e-round-robin-alias
+          strategy: round-robin
+          cooldown_seconds: 60
+          targets:
+            - model: fake/fake-primary
+              weight: 1
+            - model: fake/fake-secondary
+              weight: 1
+openai-compatibility:
+  - name: fake
+    prefix: fake
+    base-url: "http://127.0.0.1:19080/v1"
+    api-key-entries:
+      - api-key: fake-provider-key
+    models:
+      - name: fake-primary
+      - name: fake-secondary

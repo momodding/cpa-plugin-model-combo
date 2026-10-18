@@ -5,6 +5,11 @@ import (
 	"time"
 )
 
+const (
+	minAccountCooldown = 100 * time.Millisecond
+	maxAccountCooldown = 5 * time.Minute
+)
+
 // comboRuntime manages per-group mutable selector state for all combos.
 // It is the replacement for routeRuntime for the combo execution path.
 // Legacy routeRuntime is preserved for existing execute/stream code during transition.
@@ -13,8 +18,9 @@ type comboRuntime struct {
 	now    func() time.Time
 	groups map[string]*groupRuntime // key = candidateKey prefix "aliasKey\x00groupKey"
 
-	accountMu      sync.Mutex
-	accountCurrent map[string]map[string]int
+	accountMu       sync.Mutex
+	accountCurrent  map[string]map[string]int
+	accountCooldown map[string]map[string]time.Time // [poolSig][logicalKey] = coolUntil; logicalKey = account.key + "\x00" + account.id
 }
 
 // groupRuntime holds per-group mutable state: cursor (RR), smooth WRR current weights,
@@ -48,7 +54,7 @@ func newComboRuntime(now func() time.Time) *comboRuntime {
 	if now == nil {
 		now = time.Now
 	}
-	return &comboRuntime{now: now, groups: make(map[string]*groupRuntime), accountCurrent: make(map[string]map[string]int)}
+	return &comboRuntime{now: now, groups: make(map[string]*groupRuntime), accountCurrent: make(map[string]map[string]int), accountCooldown: make(map[string]map[string]time.Time)}
 }
 
 // Sync installs fresh group state for new plans; preserves compatible existing state.
@@ -111,6 +117,13 @@ func (r *comboRuntime) Clone(plans []comboPlan, now func() time.Time) *comboRunt
 						copied[key] = weight
 					}
 					cloned.accountCurrent[candidate.accountPool.signature] = copied
+				}
+				if cooldown := r.accountCooldown[candidate.accountPool.signature]; cooldown != nil {
+					copied := make(map[string]time.Time, len(cooldown))
+					for key, until := range cooldown {
+						copied[key] = until
+					}
+					cloned.accountCooldown[candidate.accountPool.signature] = copied
 				}
 			}
 		}

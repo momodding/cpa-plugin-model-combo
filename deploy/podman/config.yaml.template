@@ -1,0 +1,93 @@
+# CLIProxyAPI v7.3.9 Configuration Template
+# 
+# Replace placeholders:
+#   @API_KEY@          - CPA API key (random 32+ chars, alphanumeric)
+#   @MANAGEMENT_KEY@   - Dashboard authentication key (random 48+ chars)
+#   @PROVIDER_NAME@    - Your provider name (e.g., openai, anthropic, custom)
+#   @BASE_URL@         - Provider base URL (e.g., https://api.openai.com/v1)
+#   @API_KEY_VALUE@    - Provider API key (do NOT commit; inject at runtime)
+#
+# Non-production placeholders assume fake provider on loopback 127.0.0.1:19080
+#
+
+host: "127.0.0.1"
+port: 8317
+
+# CPA authentication and key management
+api-keys:
+  - "@API_KEY@"
+
+# Dashboard management access (requires this key for config/health mutations)
+remote-management:
+  allow-remote: false
+  secret-key: "@MANAGEMENT_KEY@"
+  disable-control-panel: false
+
+# Request handling
+request-retry: 3
+request-timeout-seconds: 300
+usage-statistics-enabled: true
+
+# Plugin configuration
+plugins:
+  enabled: true
+  dir: "/CLIProxyAPI/plugins"
+  
+  configs:
+    model-combo:
+      enabled: true
+      priority: 100
+      
+      # Plugin data directory (persisted across container restarts)
+      data_path: "/CLIProxyAPI/data/model-combo-usage.db"
+      
+      # Usage record retention (days)
+      retention_days: 365
+      
+      # Resilience and retry configuration
+      resilience:
+        max_attempts: 4
+        deadline_ms: 120000
+        base_backoff_ms: 100
+        max_backoff_ms: 2000
+        honor_retry_after: true
+        
+        # Circuit breaker for target model failures
+        circuit_failure_threshold: 3
+        circuit_open_seconds: 60
+        circuit_max_open_seconds: 900
+      
+      # Route aliases: map client-visible names to physical model groups
+      routes:
+        - alias: reasoning
+          capability_policy: compatible-if-known
+          groups:
+            - name: premium
+              strategy: priority
+              cooldown_seconds: 60
+              targets:
+                - model: "@PROVIDER_NAME@/reasoning-large"
+                  weight: 1
+                - model: "@PROVIDER_NAME@/reasoning-medium"
+                  weight: 1
+            - name: standard
+              strategy: weighted-round-robin
+              targets:
+                - model: "@PROVIDER_NAME@/gpt-4"
+                  weight: 2
+                - model: "@PROVIDER_NAME@/gpt-4-turbo"
+                  weight: 1
+
+# Provider configuration: OpenAI-compatible API gateway
+# Customize for your provider; example shows placeholder structure
+openai-compatibility:
+  - name: "@PROVIDER_NAME@"
+    prefix: "@PROVIDER_NAME@"
+    base-url: "@BASE_URL@"
+    api-key-entries:
+      - api-key: "@API_KEY_VALUE@"
+    models:
+      - name: reasoning-large
+      - name: reasoning-medium
+      - name: gpt-4
+      - name: gpt-4-turbo

@@ -70,17 +70,21 @@ func (p *modelComboPlugin) executeWithHostContext(ctx context.Context, request p
 					continue
 				}
 			}
+			var selectedAccount resolvedAccount
 			attemptedAccounts := make(map[string]struct{}, len(resolved))
 			candidatePenalized := false
 			for ledger.canAttempt() {
 				authID := ""
 				if pooled {
-					account, ok := selectResolvedAccount(p.comboRuntime, selection.candidate.accountPool, excludeResolvedAccounts(resolved, attemptedAccounts))
+					available := excludeResolvedAccounts(filterCooledAccounts(p.comboRuntime, selection.candidate.accountPool.signature, resolved), attemptedAccounts)
+					account, ok := selectResolvedAccount(p.comboRuntime, selection.candidate.accountPool, available)
 					if !ok {
 						break
 					}
+					selectedAccount = account
+					logicalKey := account.key + "\x00" + account.id
 					authID = account.id
-					attemptedAccounts[account.key+"\x00"+account.id] = struct{}{}
+					attemptedAccounts[logicalKey] = struct{}{}
 				}
 				ledger.recordAttempt()
 				target := targetModel(requestedModel, selection.candidate.model)
@@ -102,11 +106,19 @@ func (p *modelComboPlugin) executeWithHostContext(ctx context.Context, request p
 				}
 				failure := classifyAttemptFailure(err, response.Headers, policy, time.Duration(plan.resilience.MaxBackoffMilliseconds)*time.Millisecond, time.Until(ledger.deadline))
 				if failure.terminal || !failure.retry {
+					if pooled && selectedAccount.key != "" && failure.penalize {
+						logicalKey := selectedAccount.key + "\x00" + selectedAccount.id
+						p.comboRuntime.MarkAccountFailure(selection.candidate.accountPool.signature, logicalKey, failure.retryAfter)
+					}
 					p.comboRuntime.ReleaseProbe(plan, group, selection.candidate)
 					return pluginapi.ExecutorResponse{}, err
 				}
 				lastErr, ledger.lastErr = err, err
 				candidatePenalized = candidatePenalized || failure.penalize
+				if pooled && selectedAccount.key != "" && failure.penalize {
+					logicalKey := selectedAccount.key + "\x00" + selectedAccount.id
+					p.comboRuntime.MarkAccountFailure(selection.candidate.accountPool.signature, logicalKey, failure.retryAfter)
+				}
 				if err := waitForBackoff(ctx, backoffDelay(ledger.count-1, plan.resilience, failure.retryAfter, time.Until(ledger.deadline))); err != nil {
 					p.comboRuntime.ReleaseProbe(plan, group, selection.candidate)
 					return pluginapi.ExecutorResponse{}, err

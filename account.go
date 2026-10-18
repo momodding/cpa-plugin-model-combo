@@ -128,6 +128,73 @@ func selectResolvedAccount(runtime *comboRuntime, plan *accountPlan, resolved []
 	return available[selected.Key], true
 }
 
+// MarkAccountFailure marks an account with cooldown after retryable failure.
+// poolSig + logicalKey (account.key + "\x00" + account.id) must match exactly.
+// retryAfter is clamped between minAccountCooldown and maxAccountCooldown.
+func (runtime *comboRuntime) MarkAccountFailure(poolSig string, logicalKey string, retryAfter time.Duration) {
+	if runtime == nil || poolSig == "" || logicalKey == "" {
+		return
+	}
+	if retryAfter < minAccountCooldown {
+		retryAfter = minAccountCooldown
+	}
+	if retryAfter > maxAccountCooldown {
+		retryAfter = maxAccountCooldown
+	}
+	runtime.accountMu.Lock()
+	defer runtime.accountMu.Unlock()
+	cooldown := runtime.accountCooldown[poolSig]
+	if cooldown == nil {
+		cooldown = make(map[string]time.Time)
+		runtime.accountCooldown[poolSig] = cooldown
+	}
+	cooldown[logicalKey] = runtime.now().Add(retryAfter)
+}
+
+// filterCooledAccounts returns resolved accounts excluding those with unexpired cooldown.
+// Exact logical key (account.key + "\x00" + account.id) must match to be excluded.
+// Deletes expired cooldown entries during filtering; deletes pool map if empty.
+func filterCooledAccounts(runtime *comboRuntime, poolSig string, resolved []resolvedAccount) []resolvedAccount {
+	if runtime == nil || poolSig == "" {
+		return resolved
+	}
+	runtime.accountMu.Lock()
+	defer runtime.accountMu.Unlock()
+	cooldown := runtime.accountCooldown[poolSig]
+	if cooldown == nil {
+		return resolved
+	}
+	now := runtime.now()
+	// Sweep all expired cooldown entries, regardless of resolved.
+	for logicalKey, until := range cooldown {
+		if !now.Before(until) {
+			// Expired; delete it.
+			delete(cooldown, logicalKey)
+		}
+	}
+	// Delete pool map if empty after cleanup.
+	if len(cooldown) == 0 {
+		delete(runtime.accountCooldown, poolSig)
+		return resolved
+	}
+	// If no accounts available, return early.
+	if len(resolved) == 0 {
+		return resolved
+	}
+	// Filter resolved for unexpired exact matches.
+	filtered := make([]resolvedAccount, 0, len(resolved))
+	for _, entry := range resolved {
+		logicalKey := entry.key + "\x00" + entry.id
+		until, exists := cooldown[logicalKey]
+		if exists && now.Before(until) {
+			// Unexpired cooldown; skip this account.
+			continue
+		}
+		filtered = append(filtered, entry)
+	}
+	return filtered
+}
+
 func normalizeAccountPools(raw map[string]accountPoolYAML) (map[string]accountPool, error) {
 	if len(raw) > maxAccountPools {
 		return nil, fmt.Errorf("account_pools must contain at most %d entries", maxAccountPools)

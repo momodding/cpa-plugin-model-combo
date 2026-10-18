@@ -21,7 +21,6 @@ const (
 
 type managementRPCRequest struct {
 	pluginapi.ManagementRequest
-	HostCallbackID string `json:"host_callback_id,omitempty"`
 }
 
 type managementRegistrationResponse struct {

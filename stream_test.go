@@ -45,6 +45,20 @@ routes:
 	}
 }
 
+func TestExecuteStreamHonorsCancelledContext(t *testing.T) {
+	plugin := testComboPlugin(testModelRoute("smart", routeStrategyPriority, 30, "provider-a"))
+	host := &fakeModelHost{}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	err := plugin.executeStreamWithHost(ctx, pluginapi.ExecutorRequest{Model: "smart", SourceFormat: "openai"}, "plugin-stream", host)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("executeStreamWithHost(cancelled ctx) error = %v, want context.Canceled", err)
+	}
+	if len(host.startCalls) != 0 {
+		t.Fatalf("executeStreamWithHost(cancelled ctx) start calls = %d, want 0", len(host.startCalls))
+	}
+}
+
 func TestExecuteStreamRetriesAnotherPooledAccount(t *testing.T) {
 	plugin := testComboPluginFromConfig(t, `
 resilience: {max_attempts: 2, base_backoff_ms: 0, max_backoff_ms: 0}

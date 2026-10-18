@@ -1,0 +1,86 @@
+version: '3.9'
+
+services:
+  cpa:
+    image: ${CPA_IMAGE:-docker.io/eceasy/cli-proxy-api:v7.3.9}
+    container_name: ${CPA_CONTAINER_NAME:-cpa-model-combo}
+    hostname: cpa
+    restart: unless-stopped
+    
+    # Networking: bind to localhost by default; override CPA_BIND_HOST to enable remote
+    ports:
+      - "${CPA_BIND_HOST:-127.0.0.1}:${CPA_PORT:-8317}:8317"
+    
+    # Volumes: config and plugin as bind mounts; auth/data/logs as persistent named volumes
+    volumes:
+      # Configuration (bind mount to config.yaml file; read-only at startup)
+      - type: bind
+        source: ${CPA_CONFIG_FILE:-./config.yaml}
+        target: /CLIProxyAPI/config.yaml
+        read_only: true
+
+      # Model Combo plugin (bind mount; model-combo.so/.dylib extracted to ./plugins/)
+      - type: bind
+        source: ${CPA_PLUGIN_DIR:-./plugins}
+        target: /CLIProxyAPI/plugins
+        read_only: true
+
+      # Host authentication (CPA manages; persists account credentials)
+      - type: volume
+        source: cpa_auth
+        target: /root/.cli-proxy-api
+
+      # Model Combo usage database (persistent; never reset between upgrades)
+      - type: volume
+        source: cpa_data
+        target: /CLIProxyAPI/data
+
+      # Request/error logs (optional; CPA rotation policy applies)
+      - type: volume
+        source: cpa_logs
+        target: /CLIProxyAPI/logs
+
+      # Static assets (CPA dashboard)
+      - type: volume
+        source: cpa_static
+        target: /CLIProxyAPI/static
+    
+    # Security: do not elevate privileges; rootless podman supported
+    privileged: false
+    user: "${CPA_UID:-1000}:${CPA_GID:-3000}"
+    
+    # Resource limits (customize per environment)
+    mem_limit: ${CPA_MEM_LIMIT:-1g}
+    memswap_limit: ${CPA_MEMSWAP_LIMIT:-1g}
+    cpus: ${CPA_CPUS:-2}
+    
+    # Graceful shutdown
+    stop_grace_period: 30s
+    
+    # Health check: optional; depends on CPA exposing a health endpoint
+    # healthcheck:
+    #   test: ["CMD", "curl", "-f", "http://localhost:8317/health"]
+    #   interval: 30s
+    #   timeout: 5s
+    #   retries: 3
+    #   start_period: 10s
+    
+    environment: {}
+    
+    labels:
+      "com.example.description": "CLIProxyAPI with Model Combo plugin"
+      "com.example.version": "${CPA_IMAGE_TAG:-v7.3.9}"
+      "com.example.managed-by": "cpa-model-combo"
+
+volumes:
+  # Named volumes: created on first up; preserved on down/up cycles
+  # Use `podman volume inspect cpa_*` to see mount points
+  cpa_auth:
+    driver: local
+    # Persistent authentication storage; never ephemeral/tmpfs
+  cpa_data:
+    driver: local
+  cpa_logs:
+    driver: local
+  cpa_static:
+    driver: local

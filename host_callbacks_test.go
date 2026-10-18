@@ -25,7 +25,7 @@ func TestCallbackModelHostListAuthUsesEmptyWirePayload(t *testing.T) {
 			if strings.Contains(string(payload), "host_callback_id") {
 				t.Fatalf("auth-list payload included callback identifier: %s", payload)
 			}
-			return json.RawMessage(`[{"id":"opaque-auth-id","name":"work","provider":"openai"}]`), nil
+			return json.RawMessage(`{"files":[{"id":"opaque-auth-id","name":"work","provider":"openai"}]}`), nil
 		},
 	}
 	entries, err := host.ListAuth()
@@ -34,6 +34,31 @@ func TestCallbackModelHostListAuthUsesEmptyWirePayload(t *testing.T) {
 	}
 	if !called || len(entries) != 1 || entries[0].ID != "opaque-auth-id" {
 		t.Fatalf("ListAuth() = %#v, called = %v", entries, called)
+	}
+}
+
+func TestCallbackModelHostListAuthRejectsInvalidEnvelope(t *testing.T) {
+	tests := []struct {
+		name    string
+		payload json.RawMessage
+	}{
+		{name: "bare array", payload: json.RawMessage(`[{"id":"auth-1","name":"work"}]`)},
+		{name: "malformed JSON", payload: json.RawMessage(`{"files":`)},
+		{name: "missing files", payload: json.RawMessage(`{}`)},
+		{name: "null files", payload: json.RawMessage(`{"files":null}`)},
+		{name: "non-array files", payload: json.RawMessage(`{"files":{}}`)},
+		{name: "missing auth ID", payload: json.RawMessage(`{"files":[{"name":"work"}]}`)},
+		{name: "duplicate auth ID", payload: json.RawMessage(`{"files":[{"id":"auth-1","name":"work"},{"id":"auth-1","name":"other"}]}`)},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			host := callbackModelHost{rawCall: func(string, json.RawMessage) (json.RawMessage, error) {
+				return test.payload, nil
+			}}
+			if entries, err := host.ListAuth(); err == nil {
+				t.Fatalf("ListAuth() = %#v, nil error", entries)
+			}
+		})
 	}
 }
 

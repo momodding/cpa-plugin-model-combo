@@ -1,0 +1,21 @@
+# Local environment overrides (real keys, credentials)
+.env.local
+.env.*.local
+
+# Configuration with real values
+config.yaml
+
+# Plugin binaries (built locally)
+plugins/
+dist/
+
+# Podman/Docker artifacts
+.podman/
+.docker/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~

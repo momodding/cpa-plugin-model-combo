@@ -98,3 +98,73 @@ func TestSelectResolvedAccountKeepsRuntimeRotationIsolated(t *testing.T) {
 		t.Fatalf("second first-runtime selection = %#v, %v", selected, ok)
 	}
 }
+
+func TestAccountCooldownExcludesExactLogicalKey(t *testing.T) {
+	now := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+	rt := newComboRuntime(func() time.Time { return now })
+	poolSig := "test-pool"
+	available := []resolvedAccount{{key: "k1", id: "shared-id"}, {key: "k2", id: "shared-id"}}
+
+	// Mark k1 + shared-id as cooled.
+	rt.MarkAccountFailure(poolSig, "k1"+"\x00"+"shared-id", 100*time.Millisecond)
+
+	// filterCooledAccounts must exclude exact k1\x00shared-id only, not k2\x00shared-id.
+	filtered := filterCooledAccounts(rt, poolSig, available)
+	if len(filtered) != 1 || filtered[0].key != "k2" {
+		t.Fatalf("filterCooledAccounts should exclude only exact logical key; got %#v", filtered)
+	}
+	// Verify cooldown persists after unrelated selection.
+	selectResolvedAccount(rt, newAccountPlan(accountPool{Name: "pool", Strategy: routeStrategyPriority, Accounts: []account{{Key: "k2", AuthName: "k2", Provider: "test", Weight: 1}}}), available)
+	filtered2 := filterCooledAccounts(rt, poolSig, available)
+	if len(filtered2) != 1 || filtered2[0].key != "k2" {
+		t.Fatalf("cooldown should persist after unrelated selection; got %#v", filtered2)
+	}
+}
+
+func TestAccountCooldownExpiresWithDeterministicClock(t *testing.T) {
+	now := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+	rt := newComboRuntime(func() time.Time { return now })
+	poolSig := "test-pool"
+	available := []resolvedAccount{{key: "test", id: "id-1"}}
+
+	// Mark account as cooled for 100ms.
+	rt.MarkAccountFailure(poolSig, "test"+"\x00"+"id-1", 100*time.Millisecond)
+
+	// Before expiry, cooldown excludes account.
+	filtered := filterCooledAccounts(rt, poolSig, available)
+	if len(filtered) != 0 {
+		t.Fatalf("expected cooldown to exclude account; got %#v", filtered)
+	}
+	// Pool map should exist.
+	if len(rt.accountCooldown[poolSig]) != 1 {
+		t.Fatalf("expected pool cooldown map with 1 entry; got %d", len(rt.accountCooldown[poolSig]))
+	}
+
+	// Advance time past expiry.
+	now = now.Add(150 * time.Millisecond)
+
+	// After expiry, account is available and expired entry deleted.
+	filtered = filterCooledAccounts(rt, poolSig, available)
+	if len(filtered) != 1 || filtered[0].key != "test" {
+		t.Fatalf("expected account to be available after expiry; got %#v", filtered)
+	}
+	// Pool map should be deleted when empty.
+	if _, exists := rt.accountCooldown[poolSig]; exists {
+		t.Fatalf("expected empty pool map to be deleted")
+	}
+	// Verify stale logical key not in resolved is swept and pool map deleted.
+	rt.MarkAccountFailure(poolSig, "stale"+"\x00"+"id-2", 100*time.Millisecond)
+	if len(rt.accountCooldown[poolSig]) != 1 {
+		t.Fatalf("expected pool cooldown map with stale entry; got %d", len(rt.accountCooldown[poolSig]))
+	}
+	// Advance clock another 150ms so stale entry expires.
+	now = now.Add(150 * time.Millisecond)
+	filtered = filterCooledAccounts(rt, poolSig, []resolvedAccount{})
+	if len(filtered) != 0 {
+		t.Fatalf("expected empty resolved to return empty; got %#v", filtered)
+	}
+	// Pool map should be deleted after sweeping stale entry.
+	if _, exists := rt.accountCooldown[poolSig]; exists {
+		t.Fatalf("expected pool map to be deleted after sweeping all expired entries")
+	}
+}

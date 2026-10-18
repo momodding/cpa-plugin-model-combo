@@ -1,0 +1,23 @@
+services:
+  cpa:
+    image: ${CPA_E2E_IMAGE:-docker.io/eceasy/cli-proxy-api:v7.3.9}
+    ports:
+      - "127.0.0.1:${CPA_E2E_PORT}:8317"
+    volumes:
+      - type: bind
+        source: ${CPA_E2E_WORKSPACE}/config.yaml
+        target: /CLIProxyAPI/config.yaml
+        read_only: true
+      - type: bind
+        source: ${CPA_E2E_WORKSPACE}/auth
+        target: /root/.cli-proxy-api
+      - type: bind
+        source: ${CPA_E2E_WORKSPACE}/plugins
+        target: /CLIProxyAPI/plugins
+      - type: bind
+        source: ${CPA_E2E_WORKSPACE}/logs
+        target: /CLIProxyAPI/logs
+      - type: bind
+        source: ${CPA_E2E_WORKSPACE}/static
+        target: /CLIProxyAPI/static
+    stop_grace_period: 30s

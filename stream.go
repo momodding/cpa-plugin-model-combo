@@ -10,7 +10,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
 )
 
-func (p *modelComboPlugin) startStream(request executorRPCRequest, host modelHost) ([]byte, error) {
+func (p *modelComboPlugin) startStream(ctx context.Context, request executorRPCRequest, host modelHost) ([]byte, error) {
 	streamID := strings.TrimSpace(request.StreamID)
 	if streamID == "" {
 		return errorEnvelope("executor_error", "stream_id is required for executor.execute_stream", 0), nil
@@ -23,7 +23,7 @@ func (p *modelComboPlugin) startStream(request executorRPCRequest, host modelHos
 			}
 			host.ClosePluginStream(streamID, errorMessage)
 		}()
-		if err := p.executeStreamWithHost(context.Background(), request.ExecutorRequest, streamID, host); err != nil {
+		if err := p.executeStreamWithHost(ctx, request.ExecutorRequest, streamID, host); err != nil {
 			errorMessage = err.Error()
 		}
 	}()
@@ -33,6 +33,9 @@ func (p *modelComboPlugin) startStream(request executorRPCRequest, host modelHos
 func (p *modelComboPlugin) executeStreamWithHost(ctx context.Context, request pluginapi.ExecutorRequest, pluginStreamID string, host modelHost) error {
 	if p == nil || host == nil {
 		return statusError{status: http.StatusBadGateway, message: "model combo host callback is unavailable"}
+	}
+	if err := ctx.Err(); err != nil {
+		return err
 	}
 	plan, ok := p.matchingCombo(request.Model)
 	if !ok {
@@ -75,17 +78,21 @@ func (p *modelComboPlugin) executeStreamWithHost(ctx context.Context, request pl
 					continue
 				}
 			}
+			var selectedAccount resolvedAccount
 			attemptedAccounts := make(map[string]struct{}, len(resolved))
 			candidatePenalized := false
 			for ledger.canAttempt() {
 				authID := ""
 				if pooled {
-					account, ok := selectResolvedAccount(p.comboRuntime, selection.candidate.accountPool, excludeResolvedAccounts(resolved, attemptedAccounts))
+					available := excludeResolvedAccounts(filterCooledAccounts(p.comboRuntime, selection.candidate.accountPool.signature, resolved), attemptedAccounts)
+					account, ok := selectResolvedAccount(p.comboRuntime, selection.candidate.accountPool, available)
 					if !ok {
 						break
 					}
+					selectedAccount = account
+					logicalKey := account.key + "\x00" + account.id
 					authID = account.id
-					attemptedAccounts[account.key+"\x00"+account.id] = struct{}{}
+					attemptedAccounts[logicalKey] = struct{}{}
 				}
 				ledger.recordAttempt()
 				target := targetModel(requestedModel, selection.candidate.model)
@@ -102,10 +109,18 @@ func (p *modelComboPlugin) executeStreamWithHost(ctx context.Context, request pl
 				failure := classifyAttemptFailure(err, nil, policy, time.Duration(plan.resilience.MaxBackoffMilliseconds)*time.Millisecond, time.Until(ledger.deadline))
 				if failure.terminal || !failure.retry {
 					p.comboRuntime.ReleaseProbe(plan, group, selection.candidate)
+					if pooled && failure.penalize {
+						logicalKey := selectedAccount.key + "\x00" + selectedAccount.id
+						p.comboRuntime.MarkAccountFailure(selection.candidate.accountPool.signature, logicalKey, failure.retryAfter)
+					}
 					return err
 				}
 				lastErr, ledger.lastErr = err, err
 				candidatePenalized = candidatePenalized || failure.penalize
+				if pooled && failure.penalize {
+					logicalKey := selectedAccount.key + "\x00" + selectedAccount.id
+					p.comboRuntime.MarkAccountFailure(selection.candidate.accountPool.signature, logicalKey, failure.retryAfter)
+				}
 				if err := waitForBackoff(ctx, backoffDelay(ledger.count-1, plan.resilience, failure.retryAfter, time.Until(ledger.deadline))); err != nil {
 					p.comboRuntime.ReleaseProbe(plan, group, selection.candidate)
 					return err

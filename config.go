@@ -152,10 +152,18 @@ type accountYAML struct {
 	Weight   *int   `yaml:"weight,omitempty" json:"weight,omitempty"`
 }
 
+// sessionAffinityYAML reserves per-combo affinity configuration.
+// CLIProxyAPI v7.3.9 does not expose an authenticated caller session ID to ExecutorRequest.
+// Headers, query, body, metadata, and AuthID cannot safely identify a caller session.
+type sessionAffinityYAML struct {
+	Enabled bool `yaml:"enabled,omitempty" json:"enabled,omitempty"`
+}
+
 type modelComboYAML struct {
-	Alias            string            `yaml:"alias" json:"alias"`
-	Groups           *[]modelGroupYAML `yaml:"groups" json:"groups"`
-	CapabilityPolicy string            `yaml:"capability_policy,omitempty" json:"capability_policy,omitempty"`
+	Alias            string              `yaml:"alias" json:"alias"`
+	Groups           *[]modelGroupYAML   `yaml:"groups" json:"groups"`
+	CapabilityPolicy string              `yaml:"capability_policy,omitempty" json:"capability_policy,omitempty"`
+	SessionAffinity  sessionAffinityYAML `yaml:"session_affinity,omitempty" json:"session_affinity,omitempty"`
 }
 type resilienceConfigYAML struct {
 	MaxAttempts             *int  `yaml:"max_attempts,omitempty"`
@@ -511,6 +519,9 @@ func normalizeComboList(raw *[]modelComboYAML, legacyCount int, aliases map[stri
 		policy, err := normalizeCapabilityPolicy(item.CapabilityPolicy)
 		if err != nil {
 			return nil, fmt.Errorf("combos[%d] %q: %w", comboIndex, alias, err)
+		}
+		if item.SessionAffinity.Enabled {
+			return nil, fmt.Errorf("combos[%d] %q: session_affinity.enabled requires a reliable caller session ID, but CPA v7.3.9 ExecutorRequest lacks one", comboIndex, alias)
 		}
 		if item.Groups == nil || len(*item.Groups) == 0 {
 			return nil, fmt.Errorf("combos[%d] %q: at least one group is required", comboIndex, alias)

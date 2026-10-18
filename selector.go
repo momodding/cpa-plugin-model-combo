@@ -142,8 +142,6 @@ func (r *comboRuntime) selectFromGroup(plan comboPlan, g groupPlan, ledger *atte
 				anyHealthBlocked = true
 				continue
 			}
-			// Claim half-open probe; released by MarkSuccess/MarkFailure.
-			h.halfOpenOccupied = true
 		}
 		eligible = append(eligible, eligibleEntry{idx, c})
 	}
@@ -155,31 +153,36 @@ func (r *comboRuntime) selectFromGroup(plan comboPlan, g groupPlan, ledger *atte
 		return comboSelection{} // exhausted
 	}
 
+	var selected eligibleEntry
 	switch g.strategy {
 	case routeStrategyPriority:
-		e := eligible[0]
-		return comboSelection{plan: plan, group: g, candidate: e.c, candidateIdx: e.idx}
+		selected = eligible[0]
 
 	case routeStrategyRoundRobin:
 		pick := int(gr.cursor) % len(eligible)
 		gr.cursor++
-		e := eligible[pick]
-		return comboSelection{plan: plan, group: g, candidate: e.c, candidateIdx: e.idx}
+		selected = eligible[pick]
 
 	case routeStrategyWeightedRoundRobin:
-		return r.selectWRR(gr, g, eligible, plan)
+		selected = selectWRR(gr, eligible)
 
 	default:
 		// Unknown strategy: fall back to priority (validated at config decode time).
-		e := eligible[0]
-		return comboSelection{plan: plan, group: g, candidate: e.c, candidateIdx: e.idx}
+		selected = eligible[0]
 	}
+
+	// Reserve a half-open probe only after strategy selects its candidate. Reserving
+	// candidates while building eligible would strand every unselected half-open peer.
+	if h := gr.health[selected.c.candidateKey]; h != nil && h.circuitOpen && !now.Before(h.circuitOpenUntil) {
+		h.halfOpenOccupied = true
+	}
+	return comboSelection{plan: plan, group: g, candidate: selected.c, candidateIdx: selected.idx}
 }
 
 // selectWRR implements smooth weighted round-robin over eligible candidates only.
 // Algorithm: current[i] += weight[i]; pick max; subtract total from winner.
 // Only eligible positions participate; skipped candidates do not accumulate drift.
-func (r *comboRuntime) selectWRR(gr *groupRuntime, g groupPlan, eligible []eligibleEntry, plan comboPlan) comboSelection {
+func selectWRR(gr *groupRuntime, eligible []eligibleEntry) eligibleEntry {
 	// Accumulate.
 	for _, e := range eligible {
 		w := int64(e.c.weight)
@@ -211,5 +214,5 @@ func (r *comboRuntime) selectWRR(gr *groupRuntime, g groupPlan, eligible []eligi
 	}
 
 	gr.wrrCurrentWeights[best.idx] -= total
-	return comboSelection{plan: plan, group: g, candidate: best.c, candidateIdx: best.idx}
+	return best
 }

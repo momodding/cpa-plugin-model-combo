@@ -1,6 +1,7 @@
 package main
 
 import (
+	"sync"
 	"testing"
 	"time"
 )
@@ -11,6 +12,61 @@ func selectorPlan(alias string, groups ...modelGroup) comboPlan {
 		panic(err)
 	}
 	return compileCombo(modelCombo{Alias: alias, Groups: groups}, resilience)
+}
+
+func TestComboSelectorReservesOnlyOneConcurrentHalfOpenProbe(t *testing.T) {
+	plan := selectorPlan("half-open", selectorGroup("g", routeStrategyPriority, 0, comboTarget{Model: "a", Weight: 1}))
+	runtime := newComboRuntime(nil)
+	runtime.Sync([]comboPlan{plan})
+	key := plan.groups[0].candidates[0].candidateKey
+	group := runtime.groups[runtimeGroupKey(plan.aliasKey, plan.groups[0].groupKey)]
+	group.health[key] = &candidateHealth{circuitOpen: true, circuitOpenUntil: time.Now().Add(-time.Second)}
+
+	start := make(chan struct{})
+	selections := make(chan comboSelection, 2)
+	var wg sync.WaitGroup
+	for range 2 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			selections <- runtime.selectFromGroup(plan, plan.groups[0], newAttemptLedger(1, 0))
+		}()
+	}
+	close(start)
+	wg.Wait()
+	close(selections)
+
+	selected := 0
+	for selection := range selections {
+		if selection.candidate.model != "" {
+			selected++
+		}
+	}
+	if selected != 1 {
+		t.Fatalf("concurrent half-open selections = %d, want 1", selected)
+	}
+}
+
+func TestComboSelectorOnlyReservesSelectedHalfOpenCandidate(t *testing.T) {
+	plan := selectorPlan("half-open", selectorGroup("g", routeStrategyPriority, 0, comboTarget{Model: "a", Weight: 1}, comboTarget{Model: "b", Weight: 1}))
+	runtime := newComboRuntime(nil)
+	runtime.Sync([]comboPlan{plan})
+	group := runtime.groups[runtimeGroupKey(plan.aliasKey, plan.groups[0].groupKey)]
+	for _, candidate := range plan.groups[0].candidates {
+		group.health[candidate.candidateKey] = &candidateHealth{circuitOpen: true, circuitOpenUntil: time.Now().Add(-time.Second)}
+	}
+
+	selection := runtime.selectFromGroup(plan, plan.groups[0], newAttemptLedger(1, 0))
+	if selection.candidate.model != "a" {
+		t.Fatalf("selected candidate = %#v, want a", selection)
+	}
+	for _, candidate := range plan.groups[0].candidates {
+		occupied := group.health[candidate.candidateKey].halfOpenOccupied
+		if occupied != (candidate.candidateKey == selection.candidate.candidateKey) {
+			t.Fatalf("candidate %q occupied = %t, want %t", candidate.model, occupied, candidate.candidateKey == selection.candidate.candidateKey)
+		}
+	}
 }
 
 func selectorGroup(name, strategy string, cooldown int, targets ...comboTarget) modelGroup {
