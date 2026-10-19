@@ -4,17 +4,20 @@ function setUsageStatus(message,tone='info'){
 }
 function activateTab(name,moveFocus=false){
   const usage=name==='usage';
+  const health=name==='health';
   tabs.forEach(tab=>{
-    const selected=tab.id===(usage?'usage-tab':'configuration-tab');
+    const selected=tab.id===(usage?'usage-tab':health?'health-tab':'configuration-tab');
     tab.setAttribute('aria-selected',String(selected));
     tab.tabIndex=selected?0:-1;
     if(selected&&moveFocus)tab.focus();
   });
-  configurationPanelEl.hidden=usage;
+  configurationPanelEl.hidden=usage||health;
   usagePanelEl.hidden=!usage;
+  document.getElementById('health-panel').hidden=!health;
   updateConfigurationActionsClearance();
   usageState.active=usage;
   if(usage)startUsageDashboard();
+  else if(health){initializeHealthEvents();startHealthDashboard()}
   else{clearChartActive(false);stopUsagePolling()}
 }
 function handleTabKey(event){

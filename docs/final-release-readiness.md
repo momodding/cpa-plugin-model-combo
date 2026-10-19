@@ -87,6 +87,34 @@
 
 ## Closure Requirements
 
-Per `docs/final-gap-closure.md` line 17: Closure requires **implementation of every `FAIL` row plus observed execution for every `BLOCKED` row.** All three functional gaps must be completed; all three blocked categories must be live-verified.
+Closure requires **implementation of every functional gap plus observed execution for every blocked boundary.** All unresolved dependencies must be completed; all blocked categories must be live-verified.
 
 **Status: Production release NOT READY. Verdict remains `NO`.**
+---
+
+## F2.5 Verification Update (2026-10-19)
+
+### Recheck Against Release Blockers
+
+| Phase | Status | Finding |
+|-------|--------|---------|
+| **Durable combo-health (F1)** | PASS | 1.682s deterministic; race 3.555s; closure `go test ./... -count=1` ✓ PASS 12.058s. All tests pass. NOT production-ready pending CPA integration verification. |
+| **Focused WRR (F0→F2)** | PASS | 1.693s; semantics/priority/weight validation verified. Dashboard preservation confirmed. |
+| **ABI health dispatch (F2 B)** | PASS | Route dispatch fixed; test passes. |
+| **Discovered-account UI (F2 D)** | BLOCKED | **CPA v7.3.9 constraint:** ManagementRequest missing identity + host auth executor-only fields. Cannot authenticate. No authenticated discovered-account picker can be provided. |
+| **Health dashboard (F2 E)** | PASS (local) | Panel/tab/styles/DOM verified; node syntax ✓; asset embed 10.613s; health endpoint 6.220s. Browser E2E blocked: Chromium/Podman unavailable. |
+| **Session affinity (F2 F)** | BLOCKED | **CPA v7.3.9 constraint:** ExecutorRequest lacks session ID field. Config validation rejects enablement. SessionAffinity unit ✓ PASS 2.124s. Enabled affinity unavailable because trusted session identity absent. |
+
+### CPA Integration Status
+
+- **Native build:** Pre-host package compile blocked by pre-existing account_test.go compile errors (not introduced F2.5).
+- **Unit closure:** `go test ./... -count=1` ✓ PASS 12.058s (macOS linker warning: 13.0→12.0, non-functional).
+- **Browser E2E:** Blocked (Chromium/Podman unavailable on audit workstation).
+
+### Release Verdict Update
+
+**No change to `NO`:** Blockers D (discovered-account) and F (session affinity) remain unresolved CPA v7.3.9 dependencies. F3 acceptance criteria absent; no F3 implementation claim. Production release blocked until:
+1. CPA upgrades ManagementRequest and ExecutorRequest schemas (external dependency).
+2. F3 acceptance defined.
+3. Disposable CPA integration test passes.
+4. Browser E2E (Chromium/Podman) verified.

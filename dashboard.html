@@ -8,6 +8,7 @@
 {{include "dashboard/shared.css"}}
 {{include "dashboard/configuration/styles.css"}}
 {{include "dashboard/usage/styles.css"}}
+{{include "dashboard/health/styles.css"}}
 </style>
 </head>
 <body>
@@ -32,10 +33,12 @@
     <nav class="page-tabs" role="tablist" aria-label="Model Combo sections">
       <button id="configuration-tab" class="page-tab" type="button" role="tab" aria-selected="true" aria-controls="configuration-panel" tabindex="0">Configuration</button>
       <button id="usage-tab" class="page-tab" type="button" role="tab" aria-selected="false" aria-controls="usage-panel" tabindex="-1">Usage tracking</button>
+      <button id="health-tab" class="page-tab" type="button" role="tab" aria-selected="false" aria-controls="health-panel" tabindex="-1">Health status</button>
     </nav>
 
 {{include "dashboard/configuration/panel.html"}}
 {{include "dashboard/usage/panel.html"}}
+{{include "dashboard/health/panel.html"}}
   </main>
 </div>
 
@@ -46,6 +49,7 @@
 {{include "dashboard/shared.js"}}
 {{include "dashboard/configuration/tab.js"}}
 {{include "dashboard/usage/tab.js"}}
+{{include "dashboard/health/tab.js"}}
 {{include "dashboard/usage/tables.js"}}
 {{include "dashboard/usage/charts.js"}}
 {{include "dashboard/usage/pricing.js"}}

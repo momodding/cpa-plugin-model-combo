@@ -455,6 +455,28 @@ combos: [{alias: DUPLICATE, groups: [{name: primary, models: [model-b]}]}]
 	}
 }
 
+func TestDecodeRouterConfigValidatesAccountPoolStrategy(t *testing.T) {
+	cases := map[string]string{
+		"invalid strategy":          `account_pools: {primary: {strategy: adaptive, accounts: [{key: k, auth_name: a, provider: p, priority: 0}]}}`,
+		"underscore strategy":       `account_pools: {primary: {strategy: weighted_round_robin, accounts: [{key: k, auth_name: a, provider: p, priority: 0}]}}`,
+		"zero weight weighted":      `account_pools: {primary: {strategy: weighted-round-robin, accounts: [{key: k, auth_name: a, provider: p, priority: 0, weight: 0}]}}`,
+		"weight too large weighted": `account_pools: {primary: {strategy: weighted-round-robin, accounts: [{key: k, auth_name: a, provider: p, priority: 0, weight: 1000001}]}}`,
+		"nonone weight priority":    `account_pools: {primary: {strategy: priority, accounts: [{key: k, auth_name: a, provider: p, priority: 0, weight: 2}]}}`,
+		"empty accounts":            `account_pools: {primary: {strategy: priority, accounts: []}}`,
+		"missing key":               `account_pools: {primary: {strategy: priority, accounts: [{auth_name: a, provider: p, priority: 0}]}}`,
+		"missing auth_name":         `account_pools: {primary: {strategy: priority, accounts: [{key: k, provider: p, priority: 0}]}}`,
+		"missing provider":          `account_pools: {primary: {strategy: priority, accounts: [{key: k, auth_name: a, priority: 0}]}}`,
+		"negative priority":         `account_pools: {primary: {strategy: priority, accounts: [{key: k, auth_name: a, provider: p, priority: -1}]}}`,
+	}
+	for name, raw := range cases {
+		t.Run(name, func(t *testing.T) {
+			if _, err := decodeRouterConfig([]byte(raw)); err == nil {
+				t.Fatalf("decodeRouterConfig() accepted invalid account pool config: %s", name)
+			}
+		})
+	}
+}
+
 func TestDecodeRouterConfigSessionAffinityDisabledByDefault(t *testing.T) {
 	config, err := decodeRouterConfig([]byte(`combos: [{alias: demo, groups: [{name: primary, models: [model-a]}]}]`))
 	if err != nil {

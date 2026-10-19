@@ -23,4 +23,22 @@ Both commands emitted macOS linker warning that an object built for macOS 13.0 w
 
 ## Decision
 
-Local build and unit verification pass. This is not release approval: durable combo-health capability, account/health management surfaces, and session affinity remain unimplemented; external boundaries remain unobserved.
+Local build and unit verification pass. This is not release approval: health dashboard exists locally; discovered-account API and enabled session affinity blocked by CPA v7.3.9 schema constraints; external boundaries remain unobserved.
+## F2.5 Integration Verification (2026-10-19)
+
+Focused re-verification of A–F gates with CPA v7.3.9 runtime constraints:
+
+| Phase | Outcome | Evidence |
+|---|---|---|
+| A (WRR core) | ✓ PASS | Focused weighted-round-robin: 1.693s |
+| B (ABI health dispatch) | ✓ PASS | Route dispatch fixed; test passes |
+| C (Canonical WRR semantics) | ✓ PASS | Priority semantics, weight validation, dashboard preservation verified |
+| D (Discovered-account API) | BLOCKED | CPA v7.3.9 ManagementRequest lacks identity + host auth executor-only fields; authentication cannot proceed |
+| E (Health dashboard) | ✓ PASS (local) | Panel/tab/styles/DOM verified; node syntax ✓; asset embed test 10.613s; health endpoint test 6.220s; browser E2E blocked (Chromium/Podman unavailable) |
+| F (Session affinity) | BLOCKED | CPA v7.3.9 ExecutorRequest lacks session ID; config validation rejects enablement; SessionAffinity unit ✓ PASS 2.124s |
+
+**Unit suite closure:** `go test ./... -count=1` ✓ PASS 12.058s (macOS linker warning: object built for 13.0 linked 12.0).
+
+**CPA integration:** Pre-host package compile blocked by pre-existing account_test.go compile errors.
+
+**F3 note:** Explicit acceptance absent; no F3 implementation claim.

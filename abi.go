@@ -206,7 +206,7 @@ func handleModelComboABIMethod(ctx context.Context, method string, request []byt
 			return nil, fmt.Errorf("decode management.handle request: %w", err)
 		}
 		path := strings.TrimRight(strings.TrimSpace(rpcRequest.Path), "/")
-		if !strings.HasPrefix(path, modelComboUsageBasePath+"/") {
+		if !strings.HasPrefix(path, modelComboUsageBasePath+"/") && !strings.HasPrefix(path, "/v0/management/plugins/"+pluginID+"/health/") {
 			return okEnvelope(handleModelComboManagement(nil, rpcRequest.ManagementRequest))
 		}
 	}

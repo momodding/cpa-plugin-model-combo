@@ -110,6 +110,47 @@ func TestABIRegistrationUsesStreamBodyOmissionWhenHostSupportsIt(t *testing.T) {
 	}
 }
 
+func TestABIManagementHealthRoutesUseRegisteredPlugin(t *testing.T) {
+	resetModelComboABIState(t)
+	config := []byte(`combos:
+  - alias: smart
+    groups:
+      - name: primary
+        targets:
+          - model: provider-a
+`)
+	request, err := json.Marshal(lifecycleRequest{ConfigYAML: config})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := handleModelComboABIMethod(t.Context(), pluginabi.MethodPluginRegister, request); err != nil {
+		t.Fatalf("plugin.register error = %v", err)
+	}
+
+	raw, err := json.Marshal(managementRPCRequest{ManagementRequest: pluginapi.ManagementRequest{
+		Method: "GET",
+		Path:   "/v0/management/plugins/" + pluginID + "/health/list",
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	response, err := handleModelComboABIMethod(t.Context(), pluginabi.MethodManagementHandle, raw)
+	if err != nil {
+		t.Fatalf("management.handle error = %v", err)
+	}
+	var envelope abiEnvelope
+	if err := json.Unmarshal(response, &envelope); err != nil {
+		t.Fatal(err)
+	}
+	var managementResponse pluginapi.ManagementResponse
+	if err := json.Unmarshal(envelope.Result, &managementResponse); err != nil {
+		t.Fatal(err)
+	}
+	if managementResponse.StatusCode != 200 {
+		t.Fatalf("health list status = %d, want 200; body = %s", managementResponse.StatusCode, managementResponse.Body)
+	}
+}
+
 func resetModelComboABIState(t *testing.T) {
 	t.Helper()
 	previousResolver := defaultDataPathResolver

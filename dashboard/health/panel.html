@@ -1,0 +1,24 @@
+    <section id="health-panel" class="tab-panel health-panel" role="tabpanel" aria-labelledby="health-tab" aria-busy="false" hidden>
+      <div class="health-toolbar" aria-label="Health controls">
+        <div class="health-actions">
+          <button id="health-refresh" class="secondary" type="button">Refresh</button>
+        </div>
+      </div>
+
+      <div id="health-loading" class="loading-spinner" hidden>
+        <span>Loading health data…</span>
+      </div>
+
+      <div id="health-content" class="health-content">
+        <div id="health-empty" class="empty-state">
+          <p>No combo health data available.</p>
+        </div>
+        <div id="health-grid" class="health-grid" hidden>
+          <!-- populated by JavaScript -->
+        </div>
+      </div>
+
+      <div id="health-error" class="error-message" hidden>
+        <!-- error messages populated by JavaScript -->
+      </div>
+    </section>
