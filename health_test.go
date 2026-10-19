@@ -10,20 +10,32 @@ func TestComboRuntimeClonePreservesOnlyUnchangedAccountPools(t *testing.T) {
 	plans := []comboPlan{{aliasKey: "combo", groups: []groupPlan{{groupKey: "primary", candidates: []candidatePlan{{candidateKey: "combo\x00primary\x00model", accountPool: pool}}}}}}
 	runtime := newComboRuntime(time.Now)
 	runtime.accountCurrent[pool.signature] = map[string]int{"a": 3}
+	runtime.accountCooldown[pool.signature] = map[string]time.Time{"a\x00auth-a": time.Date(2026, time.October, 14, 12, 0, 0, 0, time.UTC)}
 
 	cloned := runtime.Clone(plans, time.Now)
 	if got := cloned.accountCurrent[pool.signature]["a"]; got != 3 {
 		t.Fatalf("preserved pool weight = %d, want 3", got)
 	}
+	if got := cloned.accountCooldown[pool.signature]["a\x00auth-a"]; !got.Equal(runtime.accountCooldown[pool.signature]["a\x00auth-a"]) {
+		t.Fatalf("preserved pool cooldown = %s, want %s", got, runtime.accountCooldown[pool.signature]["a\x00auth-a"])
+	}
 	cloned.accountCurrent[pool.signature]["a"] = 9
+	cloned.accountCooldown[pool.signature]["a\x00auth-a"] = time.Time{}
 	if got := runtime.accountCurrent[pool.signature]["a"]; got != 3 {
 		t.Fatalf("clone mutated original pool weight = %d", got)
+	}
+	if got := runtime.accountCooldown[pool.signature]["a\x00auth-a"]; got.IsZero() {
+		t.Fatal("clone mutated original pool cooldown")
 	}
 
 	changed := newAccountPlan(accountPool{Name: "pool", Strategy: routeStrategyWeightedRoundRobin, Accounts: []account{{Key: "a", AuthName: "a.json", Provider: "openai", Weight: 2}}})
 	changedPlans := []comboPlan{{aliasKey: "combo", groups: []groupPlan{{groupKey: "primary", candidates: []candidatePlan{{candidateKey: "combo\x00primary\x00model", accountPool: changed}}}}}}
-	if got := runtime.Clone(changedPlans, time.Now).accountCurrent[changed.signature]; got != nil {
+	changedRuntime := runtime.Clone(changedPlans, time.Now)
+	if got := changedRuntime.accountCurrent[changed.signature]; got != nil {
 		t.Fatalf("changed pool state retained = %#v", got)
+	}
+	if got := changedRuntime.accountCooldown[changed.signature]; got != nil {
+		t.Fatalf("changed pool cooldown retained = %#v", got)
 	}
 }
 
@@ -167,5 +179,79 @@ func TestResetComboGroupHealthAndPersistWaitsForMutationCallback(t *testing.T) {
 	postResetHealth := postResetSnapshot[plan.aliasKey][group.groupKey][candidate.candidateKey]
 	if postResetHealth == nil || postResetHealth.ConsecutiveFailures != 1 {
 		t.Fatalf("post-reset persisted health = %#v", postResetSnapshot)
+	}
+}
+
+func TestRestoreHealthResetsHalfOpenOccupiedAndAllowsSelection(t *testing.T) {
+	plugin := testComboPlugin(testModelRoute("smart", routeStrategyPriority, 0, "a"))
+	plan := plugin.plans[0]
+	group := plan.groups[0]
+	candidate := group.candidates[0]
+	now := time.Date(2026, time.October, 14, 12, 0, 0, 0, time.UTC)
+	plugin.comboRuntime.now = func() time.Time { return now }
+
+	// Create snapshot with CircuitOpen=true and HalfOpenOccupied=true
+	snapshot := map[string]map[string]*candidateHealth{
+		runtimeGroupKey(plan.aliasKey, group.groupKey): {
+			candidate.candidateKey: {
+				CircuitOpen:        true,
+				CircuitOpenUntil:   now.Add(-1 * time.Second), // expired
+				HalfOpenOccupied:   true,                      // stale from previous process
+				CircuitReopenCount: 1,
+			},
+		},
+	}
+	plugin.comboRuntime.RestoreHealth(snapshot)
+
+	// selectFromGroup must select the candidate (half-open probe allowed)
+	selection := plugin.comboRuntime.selectFromGroup(plan, group, newAttemptLedger(1, 0))
+	if selection.candidate.candidateKey != candidate.candidateKey {
+		t.Fatalf("after restore, selectFromGroup failed to select half-open candidate, got selection = %#v", selection)
+	}
+
+	// health.HalfOpenOccupied must be true after selection (selectFromGroup sets it)
+	gkey := runtimeGroupKey(plan.aliasKey, group.groupKey)
+	health := plugin.comboRuntime.groups[gkey].health[candidate.candidateKey]
+	if !health.HalfOpenOccupied {
+		t.Fatalf("after selection, HalfOpenOccupied = false, want true")
+	}
+}
+
+func TestRestoreHealthFromSnapshotDoesNotStrandCandidateWithHalfOpenOccupied(t *testing.T) {
+	// Simulate process restart: SnapshotHealth captures circuit+half-open state,
+	// RestoreHealth in new runtime must not strand candidate (resets HalfOpenOccupied).
+	plugin1 := testComboPlugin(testModelRoute("smart", routeStrategyPriority, 0, "a"))
+	plan := plugin1.plans[0]
+	group := plan.groups[0]
+	candidate := group.candidates[0]
+	now := time.Date(2026, time.October, 14, 12, 0, 0, 0, time.UTC)
+	plugin1.comboRuntime.now = func() time.Time { return now }
+	resilience := resilienceConfig{CircuitFailureThreshold: 1, CircuitOpenSeconds: 2, CircuitMaxOpenSeconds: 8}
+
+	plugin1.comboRuntime.MarkFailure(plan, group, candidate, resilience)
+	gkey := runtimeGroupKey(plan.aliasKey, group.groupKey)
+	health := plugin1.comboRuntime.groups[gkey].health[candidate.candidateKey]
+	circuitOpenUntil := health.CircuitOpenUntil
+
+	// Advance time to circuit expiry and do half-open selection
+	now = circuitOpenUntil
+	plugin1.comboRuntime.now = func() time.Time { return now }
+	plugin1.comboRuntime.selectFromGroup(plan, group, newAttemptLedger(1, 0))
+	if !health.HalfOpenOccupied {
+		t.Fatalf("after half-open selection, HalfOpenOccupied not set")
+	}
+
+	// Snapshot and persist
+	storedSnapshot := plugin1.comboRuntime.SnapshotHealth()
+
+	// Create new runtime (simulating process restart), restore from storage
+	plugin2 := testComboPlugin(testModelRoute("smart", routeStrategyPriority, 0, "a"))
+	plugin2.comboRuntime.now = func() time.Time { return now }
+	plugin2.comboRuntime.RestoreHealth(storedSnapshot)
+
+	// selectFromGroup must select the candidate (RestoreHealth resets HalfOpenOccupied)
+	selection2 := plugin2.comboRuntime.selectFromGroup(plan, group, newAttemptLedger(1, 0))
+	if selection2.candidate.candidateKey != candidate.candidateKey {
+		t.Fatalf("after restore from storage, selectFromGroup failed to select, got selection = %#v", selection2)
 	}
 }

@@ -61,8 +61,10 @@ func newComboRuntime(now func() time.Time) *comboRuntime {
 		now = time.Now
 	}
 	return &comboRuntime{
-		now:    now,
-		groups: make(map[string]*groupRuntime),
+		now:             now,
+		groups:          make(map[string]*groupRuntime),
+		accountCurrent:  make(map[string]map[string]int),
+		accountCooldown: make(map[string]map[string]time.Time),
 	}
 }
 func (r *comboRuntime) Sync(plans []comboPlan) {
@@ -370,6 +372,7 @@ func (r *comboRuntime) RestoreHealth(snapshot map[string]map[string]*candidateHe
 				continue
 			}
 			healthCopy := *health
+			healthCopy.HalfOpenOccupied = false
 			gr.health[ckey] = &healthCopy
 		}
 	}
