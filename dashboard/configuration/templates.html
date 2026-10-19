@@ -192,6 +192,16 @@
         <input type="text" data-account-field="provider" placeholder="gcloud" autocomplete="off">
         <small>Provider name, e.g. gcloud, azure.</small>
       </div>
+      <div class="field">
+        <label>Priority</label>
+        <input type="number" data-account-field="priority" placeholder="0" min="0" max="1000000" step="1" inputmode="numeric">
+        <small>Account priority (higher first).</small>
+      </div>
+      <div class="field">
+        <label>Weight</label>
+        <input type="number" data-account-field="weight" placeholder="(optional)" min="1" max="1000000" step="1" inputmode="numeric">
+        <small>Round-robin weight; leave empty to omit.</small>
+      </div>
     </div>
     <div class="account-actions">
       <button class="danger-button" type="button" data-action="remove">Remove</button>

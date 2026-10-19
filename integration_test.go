@@ -140,14 +140,16 @@ plugins:
           models:
             - fail/fail-model
             - work/working-model
+      combos:
         - alias: weighted-router-alias
-          strategy: weighted-round-robin
-          cooldown_seconds: 60
-          targets:
-            - model: work/working-model
-              weight: 3
-            - model: other/working-model-2
-              weight: 1
+          groups:
+            - name: weighted-primary
+              strategy: weighted-round-robin
+              targets:
+                - model: work/working-model
+                  weight: 3
+                - model: other/working-model-2
+                  weight: 1
 openai-compatibility:
   - name: fail
     prefix: fail

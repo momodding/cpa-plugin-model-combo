@@ -34,7 +34,8 @@ func TestAssembleModelComboDashboardEmbedsEveryAssetOnce(t *testing.T) {
 		"function restoreRouteFocus(descriptor)",
 		"id=\"combos-json\"",
 		"function configurationSnapshot()",
-		"Advanced combo definitions must be a JSON array.",
+		"data-account-field=\"priority\"",
+		"data-account-field=\"weight\"",
 	} {
 		if !strings.Contains(html, marker) {
 			t.Errorf("assembled dashboard is missing %q", marker)

@@ -889,7 +889,9 @@ function parseAccountPools(value) {
         __raw: acc,
         key: String(acc.key || ''),
         auth_name: String(acc.auth_name || ''),
-        provider: String(acc.provider || '')
+        provider: String(acc.provider || ''),
+        priority: acc.priority !== undefined ? Number(acc.priority) : 0,
+        weight: acc.weight !== undefined ? (acc.weight !== null ? Number(acc.weight) : undefined) : undefined
       })) : []
     };
   });
@@ -906,7 +908,13 @@ function serializeAccountPools() {
       const key = entry.querySelector('[data-account-field="key"]')?.value?.trim();
       const auth_name = entry.querySelector('[data-account-field="auth_name"]')?.value?.trim();
       const provider = entry.querySelector('[data-account-field="provider"]')?.value?.trim();
-        accounts.push({ ...(entry.__raw || {}), key, auth_name, provider });
+      const priority = entry.querySelector('[data-account-field="priority"]')?.value?.trim();
+      const weight = entry.querySelector('[data-account-field="weight"]')?.value?.trim();
+      const account = { ...(entry.__raw || {}), key, auth_name, provider };
+      if (priority) account.priority = parseInt(priority, 10);
+      if (weight) account.weight = parseInt(weight, 10);
+      else delete account.weight;
+      accounts.push(account);
     });
     if (accounts.length || name) {
       pools[name] = { ...(card.__raw || {}), strategy, accounts };
@@ -960,6 +968,8 @@ function renderAccountEntry(container, account, accountIndex, accountCount, pool
   entry.querySelector('[data-account-field="key"]').value = account.key;
   entry.querySelector('[data-account-field="auth_name"]').value = account.auth_name;
   entry.querySelector('[data-account-field="provider"]').value = account.provider;
+  entry.querySelector('[data-account-field="priority"]').value = account.priority ?? 0;
+  entry.querySelector('[data-account-field="weight"]').value = account.weight ?? '';
 
   entry.querySelectorAll('[data-action]').forEach(btn => {
     if (btn.getAttribute('data-action') === 'remove') {
@@ -1012,7 +1022,7 @@ function removePool(index) {
 
 function addAccountToPool(poolIndex) {
   const names = Object.keys(state.account_pools);
-  state.account_pools[names[poolIndex]].accounts.push({ key: '', auth_name: '', provider: '' });
+  state.account_pools[names[poolIndex]].accounts.push({ key: '', auth_name: '', provider: '', priority: 0 });
   renderAccountPools();
   refreshDirty();
 }
