@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
 	"gopkg.in/yaml.v3"
@@ -60,7 +61,8 @@ func modelComboManagementRegistration() managementRegistrationResponse {
 			{Method: http.MethodPost, Path: "/plugins/" + pluginID + "/usage/prices/sync", Description: "Synchronize CPA model prices from models.dev."},
 			{Method: http.MethodGet, Path: "/plugins/" + pluginID + "/usage/preferences", Description: "Read usage dashboard preferences."},
 			{Method: http.MethodPut, Path: "/plugins/" + pluginID + "/usage/preferences", Description: "Persist usage dashboard preferences."},
-			{Method: http.MethodPost, Path: "/plugins/" + pluginID + "/usage/reset", Description: "Clear usage aggregates and request history while preserving prices and preferences."},
+			{Method: http.MethodGet, Path: "/plugins/" + pluginID + "/health/list", Description: "List all persisted combo health snapshots."},
+			{Method: http.MethodPost, Path: "/plugins/" + pluginID + "/health/reset", Description: "Clear health state for a combo group by alias and group key."},
 		},
 		Resources: []resourceRoute{{
 			Path:        "/config",
@@ -74,6 +76,9 @@ func handleModelComboManagement(plugin *modelComboPlugin, request pluginapi.Mana
 	path := strings.TrimRight(strings.TrimSpace(request.Path), "/")
 	if strings.HasPrefix(path, modelComboUsageBasePath+"/") {
 		return handleUsageManagement(plugin, path, request)
+	}
+	if strings.HasPrefix(path, "/v0/management/plugins/"+pluginID+"/health/") {
+		return handleHealthManagement(plugin, path, request)
 	}
 	switch path {
 	case modelComboDashboardPath:
@@ -203,4 +208,132 @@ func modelComboJSONResponse(status int, value any) pluginapi.ManagementResponse 
 		},
 		Body: body,
 	}
+}
+
+// handleHealthManagement routes health management endpoints.
+func handleHealthManagement(plugin *modelComboPlugin, path string, request pluginapi.ManagementRequest) pluginapi.ManagementResponse {
+	if plugin == nil || plugin.store == nil {
+		return modelComboJSONResponse(http.StatusServiceUnavailable, map[string]any{
+			"error":   "plugin_unavailable",
+			"message": "usage store not initialized",
+		})
+	}
+
+	// Exact path matching for health endpoints.
+	healthListPath := "/v0/management/plugins/" + pluginID + "/health/list"
+	healthResetPath := "/v0/management/plugins/" + pluginID + "/health/reset"
+
+	switch path {
+	case healthListPath:
+		if !strings.EqualFold(request.Method, http.MethodGet) {
+			return modelComboJSONResponse(http.StatusMethodNotAllowed, map[string]any{
+				"error":   "method_not_allowed",
+				"message": "health list only supports GET",
+			})
+		}
+		return handleHealthList(plugin)
+	case healthResetPath:
+		if !strings.EqualFold(request.Method, http.MethodPost) {
+			return modelComboJSONResponse(http.StatusMethodNotAllowed, map[string]any{
+				"error":   "method_not_allowed",
+				"message": "health reset only supports POST",
+			})
+		}
+		return handleHealthReset(plugin, request.Body)
+	default:
+		return modelComboJSONResponse(http.StatusNotFound, map[string]any{
+			"error":   "not_found",
+			"message": "health endpoint not found",
+		})
+	}
+}
+
+type healthListResponse struct {
+	ComboHealth map[string]map[string]map[string]map[string]any `json:"comboHealth"`
+	Count       int                                             `json:"count"`
+}
+
+// handleHealthList returns all persisted combo health snapshots.
+func handleHealthList(plugin *modelComboPlugin) pluginapi.ManagementResponse {
+	snapshot, err := plugin.store.HydrateComboHealth()
+	if err != nil {
+		return modelComboJSONResponse(http.StatusInternalServerError, map[string]any{
+			"error":   "load_failed",
+			"message": fmt.Sprintf("failed to load health: %v", err),
+		})
+	}
+
+	// Convert to displayable format without raw secrets/keys.
+	displaySnapshot := make(map[string]map[string]map[string]map[string]any)
+	count := 0
+	for comboKey, groupMap := range snapshot {
+		displaySnapshot[comboKey] = make(map[string]map[string]map[string]any)
+		for groupKey, candMap := range groupMap {
+			displaySnapshot[comboKey][groupKey] = make(map[string]map[string]any)
+			for candidateKey, health := range candMap {
+				if health != nil {
+					displaySnapshot[comboKey][groupKey][candidateKey] = map[string]any{
+						"coolUntil":           health.CoolUntil.Format(time.RFC3339Nano),
+						"consecutiveFailures": health.ConsecutiveFailures,
+						"circuitOpen":         health.CircuitOpen,
+						"circuitOpenUntil":    health.CircuitOpenUntil.Format(time.RFC3339Nano),
+						"circuitReopenCount":  health.CircuitReopenCount,
+						"halfOpenOccupied":    health.HalfOpenOccupied,
+					}
+					count++
+				}
+			}
+		}
+	}
+
+	return modelComboJSONResponse(http.StatusOK, healthListResponse{
+		ComboHealth: displaySnapshot,
+		Count:       count,
+	})
+}
+
+type healthResetRequest struct {
+	ComboAliasKey string `json:"comboAliasKey"`
+	GroupKey      string `json:"groupKey"`
+}
+
+// handleHealthReset clears health state for a scoped combo group.
+func handleHealthReset(plugin *modelComboPlugin, body []byte) pluginapi.ManagementResponse {
+	var req healthResetRequest
+	decoder := json.NewDecoder(bytes.NewReader(body))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&req); err != nil {
+		return modelComboJSONResponse(http.StatusBadRequest, map[string]any{
+			"error":   "decode_failed",
+			"message": fmt.Sprintf("invalid request: %v", err),
+		})
+	}
+	if err := ensureModelComboJSONEOF(decoder); err != nil {
+		return modelComboJSONResponse(http.StatusBadRequest, map[string]any{
+			"error":   "extra_data",
+			"message": fmt.Sprintf("trailing data: %v", err),
+		})
+	}
+
+	if req.ComboAliasKey == "" || req.GroupKey == "" {
+		return modelComboJSONResponse(http.StatusBadRequest, map[string]any{
+			"error":   "missing_keys",
+			"message": "comboAliasKey and groupKey are required",
+		})
+	}
+
+	// Clear persisted and runtime health as one operation against mutation callbacks.
+	if err := plugin.comboRuntime.ResetComboGroupHealthAndPersist(req.ComboAliasKey, req.GroupKey, func() error {
+		return plugin.store.ResetComboHealth(req.ComboAliasKey, req.GroupKey)
+	}); err != nil {
+		return modelComboJSONResponse(http.StatusInternalServerError, map[string]any{
+			"error":   "reset_failed",
+			"message": fmt.Sprintf("failed to reset health: %v", err),
+		})
+	}
+	return modelComboJSONResponse(http.StatusOK, map[string]any{
+		"status":        "cleared",
+		"comboAliasKey": req.ComboAliasKey,
+		"groupKey":      req.GroupKey,
+	})
 }

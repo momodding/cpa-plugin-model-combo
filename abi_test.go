@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"path/filepath"
+	"reflect"
 	"testing"
 	"time"
 
@@ -135,4 +136,93 @@ func resetModelComboABIState(t *testing.T) {
 		}
 		defaultDataPathResolver = previousResolver
 	})
+}
+
+func TestABIShutdownPersistsReplacementAndClosesStore(t *testing.T) {
+	resetModelComboABIState(t)
+	dbPath := filepath.Join(t.TempDir(), "usage.db")
+	store, err := openUsageStore(dbPath, 30)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	if err := store.PersistComboHealth(map[string]map[string]map[string]*candidateHealth{
+		"obsolete": {"group": {"candidate": {ConsecutiveFailures: 1}}},
+	}); err != nil {
+		t.Fatalf("seed obsolete health: %v", err)
+	}
+
+	// Create a configured plugin with plan/group/candidate for MarkFailure.
+	config := []byte(`combos:
+  - alias: test-combo
+    groups:
+      - name: group1
+        models: [model-a]
+`)
+	plugin, _, err := newModelComboPlugin(config, nil)
+	if err != nil {
+		t.Fatalf("new plugin: %v", err)
+	}
+	plugin.store = store
+	testPlan := plugin.plans[0]
+	testGroup := testPlan.groups[0]
+	testCandidate := testGroup.candidates[0]
+
+	// Initialize comboRuntime properly with time source and groups.
+	plugin.comboRuntime = newComboRuntime(time.Now)
+	gkey := runtimeGroupKey(testPlan.aliasKey, testGroup.groupKey)
+	sig := groupSignature(testGroup)
+	plugin.comboRuntime.groups[gkey] = newGroupRuntime(sig, testGroup)
+	plugin.comboRuntime.MarkFailure(testPlan, testGroup, testCandidate, testPlan.resilience)
+
+	// Set ABI state and invoke shutdown.
+	modelComboABIState.Lock()
+	modelComboABIState.plugin = plugin
+	modelComboABIState.metadata = pluginapi.Metadata{Name: "test-model-combo", Version: "1.0.0"}
+	modelComboABIState.shuttingDown = false
+	modelComboABIState.Unlock()
+	ModelComboPluginShutdown()
+
+	// Verify ABI state cleared: plugin detached, metadata reset, shuttingDown set.
+	modelComboABIState.Lock()
+	abiPlugin := modelComboABIState.plugin
+	abiMetadata := modelComboABIState.metadata
+	abiShuttingDown := modelComboABIState.shuttingDown
+	modelComboABIState.Unlock()
+
+	if abiPlugin != nil {
+		t.Fatal("plugin not detached after shutdown")
+	}
+	if !reflect.DeepEqual(abiMetadata, pluginapi.Metadata{}) {
+		t.Fatal("metadata not zeroed after shutdown")
+	}
+	if !abiShuttingDown {
+		t.Fatal("shuttingDown not set after shutdown")
+	}
+
+	// Original store must be closed (read fails).
+	if _, err := store.LoadComboHealthSnapshot("obsolete", "group", "candidate"); err == nil {
+		t.Fatal("closed store accepted health read")
+	}
+
+	// Reopen and verify: obsolete row gone (replaced by fresh runtime), new candidate health persists (nonhealthy).
+	reopened, err := openUsageStore(dbPath, 30)
+	if err != nil {
+		t.Fatalf("reopen store: %v", err)
+	}
+	defer reopened.Close()
+	obsoleteSnapshot, err := reopened.LoadComboHealthSnapshot("obsolete", "group", "candidate")
+	if err != nil {
+		t.Fatalf("load obsolete health: %v", err)
+	}
+	if obsoleteSnapshot != nil {
+		t.Fatal("obsolete health remained after shutdown replacement")
+	}
+	// New candidate health should persist with failure state.
+	newSnapshot, err := reopened.LoadComboHealthSnapshot(testPlan.aliasKey, testGroup.groupKey, testCandidate.candidateKey)
+	if err != nil {
+		t.Fatalf("load new candidate health: %v", err)
+	}
+	if newSnapshot == nil || newSnapshot.ConsecutiveFailures == 0 {
+		t.Fatalf("new candidate health not persisted with failure state: %#v", newSnapshot)
+	}
 }

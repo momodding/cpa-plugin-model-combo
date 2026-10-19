@@ -119,8 +119,8 @@ func (r *comboRuntime) selectFromGroup(plan comboPlan, g groupPlan, ledger *atte
 			continue
 		}
 		// Cooldown gate.
-		if now.Before(h.coolUntil) {
-			ra := h.coolUntil.Sub(now)
+		if now.Before(h.CoolUntil) {
+			ra := h.CoolUntil.Sub(now)
 			if ra > worstRetryAfter {
 				worstRetryAfter = ra
 			}
@@ -128,9 +128,9 @@ func (r *comboRuntime) selectFromGroup(plan comboPlan, g groupPlan, ledger *atte
 			continue
 		}
 		// Circuit gate.
-		if h.circuitOpen {
-			if now.Before(h.circuitOpenUntil) {
-				ra := h.circuitOpenUntil.Sub(now)
+		if h.CircuitOpen {
+			if now.Before(h.CircuitOpenUntil) {
+				ra := h.CircuitOpenUntil.Sub(now)
 				if ra > worstRetryAfter {
 					worstRetryAfter = ra
 				}
@@ -138,7 +138,7 @@ func (r *comboRuntime) selectFromGroup(plan comboPlan, g groupPlan, ledger *atte
 				continue
 			}
 			// Duration elapsed → allow exactly one half-open probe.
-			if h.halfOpenOccupied {
+			if h.HalfOpenOccupied {
 				anyHealthBlocked = true
 				continue
 			}
@@ -173,8 +173,8 @@ func (r *comboRuntime) selectFromGroup(plan comboPlan, g groupPlan, ledger *atte
 
 	// Reserve a half-open probe only after strategy selects its candidate. Reserving
 	// candidates while building eligible would strand every unselected half-open peer.
-	if h := gr.health[selected.c.candidateKey]; h != nil && h.circuitOpen && !now.Before(h.circuitOpenUntil) {
-		h.halfOpenOccupied = true
+	if h := gr.health[selected.c.candidateKey]; h != nil && h.CircuitOpen && !now.Before(h.CircuitOpenUntil) {
+		h.HalfOpenOccupied = true
 	}
 	return comboSelection{plan: plan, group: g, candidate: selected.c, candidateIdx: selected.idx}
 }

@@ -20,7 +20,7 @@ func TestComboSelectorReservesOnlyOneConcurrentHalfOpenProbe(t *testing.T) {
 	runtime.Sync([]comboPlan{plan})
 	key := plan.groups[0].candidates[0].candidateKey
 	group := runtime.groups[runtimeGroupKey(plan.aliasKey, plan.groups[0].groupKey)]
-	group.health[key] = &candidateHealth{circuitOpen: true, circuitOpenUntil: time.Now().Add(-time.Second)}
+	group.health[key] = &candidateHealth{CircuitOpen: true, CircuitOpenUntil: time.Now().Add(-time.Second)}
 
 	start := make(chan struct{})
 	selections := make(chan comboSelection, 2)
@@ -54,7 +54,7 @@ func TestComboSelectorOnlyReservesSelectedHalfOpenCandidate(t *testing.T) {
 	runtime.Sync([]comboPlan{plan})
 	group := runtime.groups[runtimeGroupKey(plan.aliasKey, plan.groups[0].groupKey)]
 	for _, candidate := range plan.groups[0].candidates {
-		group.health[candidate.candidateKey] = &candidateHealth{circuitOpen: true, circuitOpenUntil: time.Now().Add(-time.Second)}
+		group.health[candidate.candidateKey] = &candidateHealth{CircuitOpen: true, CircuitOpenUntil: time.Now().Add(-time.Second)}
 	}
 
 	selection := runtime.selectFromGroup(plan, plan.groups[0], newAttemptLedger(1, 0))
@@ -62,7 +62,7 @@ func TestComboSelectorOnlyReservesSelectedHalfOpenCandidate(t *testing.T) {
 		t.Fatalf("selected candidate = %#v, want a", selection)
 	}
 	for _, candidate := range plan.groups[0].candidates {
-		occupied := group.health[candidate.candidateKey].halfOpenOccupied
+		occupied := group.health[candidate.candidateKey].HalfOpenOccupied
 		if occupied != (candidate.candidateKey == selection.candidate.candidateKey) {
 			t.Fatalf("candidate %q occupied = %t, want %t", candidate.model, occupied, candidate.candidateKey == selection.candidate.candidateKey)
 		}
@@ -133,6 +133,75 @@ func TestComboSelectorSmoothWeightedRoundRobin(t *testing.T) {
 	}
 }
 
+func TestComboSelectorWeightedRoundRobinLongRunProportions(t *testing.T) {
+	plan := selectorPlan("weighted", selectorGroup("g", routeStrategyWeightedRoundRobin, 0,
+		comboTarget{Model: "a", Weight: 3}, comboTarget{Model: "b", Weight: 1},
+	))
+	runtime := newComboRuntime(nil)
+	runtime.Sync([]comboPlan{plan})
+
+	counts := map[string]int{}
+	for range 400 {
+		selection := runtime.selectFromGroup(plan, plan.groups[0], newAttemptLedger(1, 0))
+		counts[selection.candidate.model]++
+	}
+	if counts["a"] != 300 || counts["b"] != 100 {
+		t.Fatalf("weighted selections = %#v, want a=300 b=100", counts)
+	}
+}
+
+func TestComboSelectorWeightedRoundRobinSkipsAttemptedAndCoolingTargets(t *testing.T) {
+	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	plan := selectorPlan("weighted", selectorGroup("g", routeStrategyWeightedRoundRobin, 0,
+		comboTarget{Model: "attempted", Weight: 3},
+		comboTarget{Model: "cooling", Weight: 2},
+		comboTarget{Model: "available", Weight: 1},
+	))
+	runtime := newComboRuntime(func() time.Time { return now })
+	runtime.Sync([]comboPlan{plan})
+	group := runtime.groups[runtimeGroupKey(plan.aliasKey, plan.groups[0].groupKey)]
+	group.health[plan.groups[0].candidates[1].candidateKey] = &candidateHealth{
+		CircuitOpen:      true,
+		CircuitOpenUntil: now.Add(time.Minute),
+	}
+	ledger := newAttemptLedger(3, 0)
+	ledger.markAttempted(plan.groups[0].candidates[0].candidateKey)
+
+	selection := runtime.selectFromGroup(plan, plan.groups[0], ledger)
+	if selection.candidate.model != "available" {
+		t.Fatalf("selection excluding attempted and cooling targets = %q, want available", selection.candidate.model)
+	}
+}
+
+func TestComboSelectorWeightedRoundRobinConcurrentProportions(t *testing.T) {
+	plan := selectorPlan("weighted", selectorGroup("g", routeStrategyWeightedRoundRobin, 0,
+		comboTarget{Model: "a", Weight: 3}, comboTarget{Model: "b", Weight: 1},
+	))
+	runtime := newComboRuntime(nil)
+	runtime.Sync([]comboPlan{plan})
+
+	const selections = 400
+	results := make(chan string, selections)
+	var wg sync.WaitGroup
+	for range selections {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			selection := runtime.selectFromGroup(plan, plan.groups[0], newAttemptLedger(1, 0))
+			results <- selection.candidate.model
+		}()
+	}
+	wg.Wait()
+	close(results)
+
+	counts := map[string]int{}
+	for model := range results {
+		counts[model]++
+	}
+	if counts["a"] != 300 || counts["b"] != 100 {
+		t.Fatalf("concurrent weighted selections = %#v, want a=300 b=100", counts)
+	}
+}
 func TestComboSelectorSkipsAttemptedAndAdvancesPastCoolingGroup(t *testing.T) {
 	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	plan := selectorPlan("smart",

@@ -4,6 +4,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -140,7 +141,7 @@ plugins:
             - fail/fail-model
             - work/working-model
         - alias: weighted-router-alias
-          strategy: round-robin
+          strategy: weighted-round-robin
           cooldown_seconds: 60
           targets:
             - model: work/working-model
@@ -833,10 +834,16 @@ func (buffer *smokeSyncBuffer) String() string {
 
 func runSmokeCommand(t *testing.T, dir, name string, arguments ...string) {
 	t.Helper()
-	command := exec.Command(name, arguments...)
+	commandContext, cancel := context.WithTimeout(t.Context(), 2*time.Minute)
+	defer cancel()
+	command := exec.CommandContext(commandContext, name, arguments...)
 	command.Dir = dir
+	command.WaitDelay = 5 * time.Second
 	output, err := command.CombinedOutput()
 	if err != nil {
+		if commandContext.Err() != nil {
+			t.Fatalf("%s %s timed out after 2m: %v\n%s", name, strings.Join(arguments, " "), commandContext.Err(), output)
+		}
 		t.Fatalf("%s %s failed: %v\n%s", name, strings.Join(arguments, " "), err, output)
 	}
 }

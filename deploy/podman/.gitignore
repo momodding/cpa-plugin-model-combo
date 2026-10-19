@@ -1,4 +1,5 @@
 # Local environment overrides (real keys, credentials)
+.env
 .env.local
 .env.*.local
 

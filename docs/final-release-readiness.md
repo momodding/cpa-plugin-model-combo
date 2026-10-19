@@ -15,8 +15,9 @@
 | **Podman Deployment** | BLOCKED | `deploy/podman/compose.yaml` static facts correct: plugin bind mount `/CLIProxyAPI/plugins`, persistent named volume `cpa_auth` at `/root/.cli-proxy-api`, data volume `cpa_data` at `/CLIProxyAPI/data`. CPA image pinned `docker.io/eceasy/cli-proxy-api:v7.3.9`. **Runtime execution unverified:** Podman unavailable on audit workstation; no live container health check, networking, graceful shutdown, or volume persistence observed. |
 | **Disposable CPA Integration** | BLOCKED | CI workflow defines CPA v7.3.9 integration test; pinned checkout at `61fdfc341b96178a8dcb53f2efc46cbc341d267c`. No local CPA host launch, auth flow simulation, or live plugin loading observed. |
 | **Browser E2E** | BLOCKED | Chromium unavailable on audit workstation. E2E requires disposable loopback CPA, management key, mutation opt-in, and browser automation. No observed execution. |
-| **Cross-Sprint Functional Gaps** | FAIL | **Preserved from final-gap-closure.md:** (1) Durable combo-health storage and observability — no schema migration, `combo_health` store, health flush/prune/reset worker. (2) Discovered-account and health management UI — no authenticated account discovery, health-list, or scoped health-reset APIs; dashboard uses raw textareas. (3) Privacy-safe session affinity — no affinity config, bounded TTL cache, or routing preference. |
+| **Cross-Sprint Functional Gaps** | PARTIAL | **Durable combo-health:** PARTIAL (schema v1→v2, callback-persist, health/list and health/reset APIs, current-plan filtering, deep-copy restore; shutdown lifecycle verified locally via deterministic ABI test: seed obsolete row + MarkFailure, persist snapshot, prune 24h TTL, close and reopen confirms obsolete pruned and nonhealthy configured health persists. Test ✓ PASS deterministic 1.682s, race 3.555s. NOT production-ready: CPA integration unverified). See `docs/sprints/sprint-f1.md`. **Remaining:** Discovered-account API (UI restricted to raw textareas). Privacy-safe session affinity (no TTL cache or routing preference). |
 
+| **Sprint F0 Fixes** | PARTIAL/FAIL | Isolated: weighted-round-robin fixture updated, deterministic tests added, focused weighted race test passed, formatting fixed. Pre-edit baseline (sprint-e): `go test ./...`, race, vet, shell syntax passed. Post-edit: full gate did not complete—tagged CPA v7.3.9 integration build succeeded but runtime failed with Go 1.27 CGO callback `unexpected return pc` at `abi.go:164`. Go 1.26 unavailable for fallback. See `docs/sprints/sprint-f0.md`. |
 ---
 
 ## Verified Static Configuration
@@ -48,16 +49,12 @@
 
 ### FAIL (Functional Implementation Required)
 
-1. **Durable Combo-Health Storage & Observability**  
-   Source: `docs/final-gap-closure.md` line 10  
-   Gap: No schema 1→2 migration, `combo_health` store, health flush/prune/reset worker, or durable observability instrumentation.
+1. **Discovered-Account & Health Management UI**
+   Source: `docs/final-gap-closure.md` line 11
+   Gap: No authenticated discovered-account API; health-list and health-reset endpoints exist but dashboard restricted to raw `combos` and `account_pools` textareas.
 
-2. **Discovered-Account & Health Management UI**  
-   Source: `docs/final-gap-closure.md` line 11  
-   Gap: No authenticated discovered-account API, health-list API, or scoped health-reset endpoint. Dashboard restricted to raw `combos` and `account_pools` textareas.
-
-3. **Privacy-Safe Session Affinity**  
-   Source: `docs/final-gap-closure.md` line 12  
+2. **Privacy-Safe Session Affinity**
+   Source: `docs/final-gap-closure.md` line 12
    Gap: No affinity configuration interface, bounded TTL cache, or routing preference implementation.
 
 ### BLOCKED (Runtime Verification Required)

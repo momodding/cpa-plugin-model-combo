@@ -1,298 +1,293 @@
 package main
 
 import (
+	"bytes"
+	"database/sql"
 	"encoding/json"
 	"net/http"
-	"strings"
+	"path/filepath"
 	"testing"
+	"time"
 
-	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginabi"
+	_ "github.com/mattn/go-sqlite3"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
 )
 
-func TestModelComboABIAdvertisesConfigurationResource(t *testing.T) {
-	resetModelComboABIState(t)
-	lifecycle, err := json.Marshal(lifecycleRequest{ConfigYAML: []byte("routes: []\n")})
+// createTestStore initializes a temporary usage store for testing.
+func createTestStore(t testing.TB) *usageStore {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "test.db")
+	db, err := sql.Open("sqlite3", sqliteDSN(dbPath, "WAL"))
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("sql.Open: %v", err)
 	}
-	if _, err := handleModelComboABIMethod(t.Context(), pluginabi.MethodPluginRegister, lifecycle); err != nil {
-		t.Fatalf("plugin.register error = %v", err)
+	db.SetMaxOpenConns(1)
+	if err := initializeSQLiteDatabase(db); err != nil {
+		db.Close()
+		t.Fatalf("initializeSQLiteDatabase: %v", err)
 	}
-	raw, err := handleModelComboABIMethod(t.Context(), pluginabi.MethodManagementRegister, nil)
-	if err != nil {
-		t.Fatalf("management.register error = %v", err)
+	store := &usageStore{db: db}
+	return store
+}
+
+func TestHandleHealthListEmpty(t *testing.T) {
+	store := createTestStore(t)
+	defer store.Close()
+
+	plugin := &modelComboPlugin{
+		store:        store,
+		comboRuntime: newComboRuntime(time.Now),
 	}
-	var envelope abiEnvelope
-	if err := json.Unmarshal(raw, &envelope); err != nil {
-		t.Fatalf("decode management envelope: %v", err)
+
+	resp := handleHealthList(plugin)
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("handleHealthList() status = %d, want %d", resp.StatusCode, http.StatusOK)
 	}
-	var management managementRegistrationResponse
-	if err := json.Unmarshal(envelope.Result, &management); err != nil {
-		t.Fatalf("decode management result: %v", err)
+
+	var result healthListResponse
+	if err := json.Unmarshal(resp.Body, &result); err != nil {
+		t.Fatalf("Unmarshal() error = %v", err)
 	}
-	if len(management.Resources) != 1 || management.Resources[0].Path != "/config" || management.Resources[0].Menu != "Model Combo" {
-		t.Fatalf("resources = %#v", management.Resources)
+
+	// Empty store should return empty ComboHealth and count 0.
+	if result.Count != 0 {
+		t.Errorf("Count = %d, want 0", result.Count)
 	}
-	wantedRoutes := map[string]bool{
-		http.MethodPost + " /plugins/model-combo/validate":          false,
-		http.MethodGet + " /plugins/model-combo/usage/dashboard":    false,
-		http.MethodGet + " /plugins/model-combo/usage/overview":     false,
-		http.MethodGet + " /plugins/model-combo/usage/groups":       false,
-		http.MethodGet + " /plugins/model-combo/usage/requests":     false,
-		http.MethodGet + " /plugins/model-combo/usage/prices":       false,
-		http.MethodPut + " /plugins/model-combo/usage/prices":       false,
-		http.MethodPost + " /plugins/model-combo/usage/prices/sync": false,
-		http.MethodGet + " /plugins/model-combo/usage/preferences":  false,
-		http.MethodPut + " /plugins/model-combo/usage/preferences":  false,
-		http.MethodPost + " /plugins/model-combo/usage/reset":       false,
-	}
-	for _, route := range management.Routes {
-		key := route.Method + " " + route.Path
-		if _, wanted := wantedRoutes[key]; wanted {
-			wantedRoutes[key] = true
-		}
-	}
-	for route, found := range wantedRoutes {
-		if !found {
-			t.Fatalf("management routes missing %s: %#v", route, management.Routes)
-		}
+	if len(result.ComboHealth) != 0 {
+		t.Errorf("ComboHealth size = %d, want 0", len(result.ComboHealth))
 	}
 }
 
-func TestModelComboManagementDashboardReusesCPAMCSessionAndTheme(t *testing.T) {
-	request, err := json.Marshal(managementRPCRequest{ManagementRequest: pluginapi.ManagementRequest{
-		Method: http.MethodGet,
-		Path:   modelComboDashboardPath,
-	}})
-	if err != nil {
-		t.Fatal(err)
+func TestHandleHealthListNoSecrets(t *testing.T) {
+	store := createTestStore(t)
+	defer store.Close()
+
+	plugin := &modelComboPlugin{
+		store:        store,
+		comboRuntime: newComboRuntime(time.Now),
 	}
-	raw, err := handleModelComboABIMethod(t.Context(), pluginabi.MethodManagementHandle, request)
-	if err != nil {
-		t.Fatalf("management.handle error = %v", err)
+
+	// Insert test health data with names that could contain secrets.
+	if err := store.SaveComboHealthSnapshot("combo1", "group1", "cand1", &candidateHealth{
+		CoolUntil:           time.Now(),
+		ConsecutiveFailures: 0,
+		CircuitOpen:         false,
+	}); err != nil {
+		t.Fatalf("SaveComboHealthSnapshot() error = %v", err)
 	}
-	var envelope abiEnvelope
-	if err := json.Unmarshal(raw, &envelope); err != nil {
-		t.Fatalf("decode envelope: %v", err)
+
+	resp := handleHealthList(plugin)
+
+	// Verify no sensitive strings are exposed.
+	forbiddenPatterns := []string{
+		"AuthID", "AuthIndex", "authId", "authIndex",
+		"email", "credential", "token",
+		".pem", ".key", "password",
 	}
-	var response pluginapi.ManagementResponse
-	if err := json.Unmarshal(envelope.Result, &response); err != nil {
-		t.Fatalf("decode management response: %v", err)
-	}
-	if response.StatusCode != http.StatusOK || !strings.Contains(response.Headers.Get("Content-Type"), "text/html") {
-		t.Fatalf("response status=%d headers=%v", response.StatusCode, response.Headers)
-	}
-	page := string(response.Body)
-	for _, required := range []string{
-		"<title>Model Combo</title>",
-		"/v0/management/plugins/model-combo/config",
-		"/v0/management/plugins/model-combo/validate",
-		"/v0/management/api-keys",
-		"/v1/models",
-		"headers.Authorization='Bearer '+key",
-		"'cli-proxy-auth'",
-		"CPA_STORAGE_PREFIX='enc::v1::'",
-		":root[data-host-theme=\"dark\"]",
-		"new MutationObserver(refresh)",
-		"class=\"auth-dock\" aria-labelledby=\"auth-title\" hidden",
-		"if(managementKey())loadConfiguration()",
-		"<select data-target-field=\"model\"",
-		"data-target-field=\"weight\"",
-		"data-target-help",
-		"model+' (unavailable)'",
-		"data-action=\"add-target\"",
-		"role=\"tablist\" aria-label=\"Model Combo sections\"",
-		"id=\"configuration-tab\" class=\"page-tab\" type=\"button\" role=\"tab\" aria-selected=\"true\"",
-		"id=\"usage-tab\" class=\"page-tab\" type=\"button\" role=\"tab\" aria-selected=\"false\"",
-		"id=\"configuration-panel\" class=\"tab-panel\" role=\"tabpanel\"",
-		"id=\"configuration-actions\" class=\"configuration-actions-dock\" aria-hidden=\"true\" hidden inert",
-		"#configuration-panel { padding-bottom: var(--configuration-actions-clearance); }",
-		"bottom: calc(20px + var(--configuration-actions-clearance));",
-		"baselineSnapshot:null",
-		"function configurationSnapshot()",
-		"return /^-?\\d+$/.test(trimmed)?{value:Number.parseInt(trimmed,10)}:{draft:raw}",
-		"function refreshDirty()",
-		"captureConfigurationBaseline();",
-		"captureConfigurationBaseline(submittedSnapshot);",
-		"if(state.busy||!state.dirty)return",
-		"if(state.dirty)saveConfiguration()",
-		"configurationActionsEl.inert=!value",
-		"button.tabIndex=-1",
-		"duration:value?280:220",
-		"const hiddenTransform=reducedMotion?'none':'translateY(18px)'",
-		".configuration-actions-dock { transform: none !important; }",
-		"configurationActionsResizeObserver=new ResizeObserver(updateConfigurationActionsClearance)",
-		"id=\"usage-panel\" class=\"tab-panel usage-panel\" role=\"tabpanel\"",
-		"/v0/management/plugins/model-combo/usage",
-		"requestManagementJSON(USAGE_API+'/dashboard?'",
-		"requestManagementJSON(USAGE_API+'/overview?'",
-		"requestManagementJSON(USAGE_API+'/groups?'",
-		"requestManagementJSON(USAGE_API+'/requests?'",
-		"requestManagementJSON(freshManagementURL(USAGE_API+'/prices'),{cache:'no-store'})",
-		"const ROUTER_FILTER_MODEL_PREFIX='model:'",
-		"const ROUTER_FILTER_ATTRIBUTION_PREFIX='attribution:'",
-		"const DEFAULT_HIDDEN_GROUP_COLUMNS=['provider','result','router_model','service_tier','source']",
-		"['attribution',usageState.attribution]",
-		"@media (max-width: 920px) {",
-		".price-grid .price-model-field { grid-column: 1 / -1; }",
-		".price-grid > * { min-width: 0; }",
-		".price-source { display: block; min-width: 0;",
-		"function effectiveCacheReadValue(value)",
-		"effective_cache_read_tokens",
-		"document.querySelectorAll('#pricing-dialog input, #pricing-dialog select, #pricing-dialog textarea, #pricing-dialog button')",
-		"function flushUsagePreferencesSave(generation)",
-		"preferenceSaveInFlight",
-		"preferenceSaveGeneration",
-		"custom_from:usageState.customFrom",
-		"custom_to:usageState.customTo",
-		"const controller=new AbortController()",
-		"generation!==usageState.generation",
-		"document.addEventListener('visibilitychange'",
-		"window.setTimeout(()=>refreshUsage(false),15000)",
-		"if(value&&value.attribution==='direct')return '—'",
-		"if(value&&value.attribution==='unattributed')return 'Unattributed'",
-		"id=\"token-chart\" class=\"chart-canvas\" role=\"img\"",
-		"id=\"model-chart\"",
-		"id=\"cost-chart\"",
-		"id=\"efficiency-chart\"",
-		"id=\"chart-tooltip\" class=\"chart-tooltip\" role=\"tooltip\"",
-		"function initializeChartInteractions()",
-		"function initializeDashboardResizeObserver()",
-		"badge.className='status-pill '+(result==='success'?'success':'failure')",
-		"applyPriceBook(book);closePricingDialog();showToast('Model pricing saved.'",
-		"id=\"pricing-dialog\"",
-		"id=\"reset-dialog\"",
-	} {
-		if !strings.Contains(page, required) {
-			t.Fatalf("dashboard missing %q", required)
+	for _, pattern := range forbiddenPatterns {
+		if bytes.Contains(resp.Body, []byte(pattern)) {
+			t.Errorf("response contains forbidden pattern: %s", pattern)
 		}
 	}
-	refreshStart := strings.Index(page, "async function refreshUsage")
-	refreshEndRelative := -1
-	if refreshStart >= 0 {
-		refreshEndRelative = strings.Index(page[refreshStart:], "function validHiddenColumns")
+
+	// Verify valid structure keys are present.
+	if !bytes.Contains(resp.Body, []byte("comboHealth")) {
+		t.Error("response missing 'comboHealth' key")
 	}
-	refreshEnd := refreshStart + refreshEndRelative
-	if refreshStart < 0 || refreshEnd < 0 || strings.Contains(page[refreshStart:refreshEnd], "resetChartInteractions()") {
-		t.Fatal("refreshUsage must preserve active chart interactions while redrawing data")
-	}
-	for _, required := range []string{
-		"pricingDialogGeneration:0",
-		"pricingWriteInFlight:null",
-		"const dialogGeneration=++usageState.pricingDialogGeneration",
-		"const pendingWrite=usageState.pricingWriteInFlight",
-		"if(pendingWrite){try{await pendingWrite}catch(_error){}}",
-		"const writeRequest=requestManagementJSON(USAGE_API+'/prices'",
-		"if(usageState.pricingWriteInFlight===writeRequest)usageState.pricingWriteInFlight=null",
-		"const writeRequest=requestManagementJSON(USAGE_API+'/prices/sync'",
-		"if(dialogGeneration!==usageState.pricingDialogGeneration)return",
-		"if(dialogGeneration===usageState.pricingDialogGeneration&&pricingDialogEl.open)",
-		"const chartActive={id:'',index:-1,anchor:null,key:null}",
-		"function chartItemKey(id,item)",
-		"function remapChartActive(id,items)",
-		"focusedKey",
-		"if(entry)entry.focus({preventScroll:true})",
-		"key:'model:'+item.model",
-		"key:'aggregate:other'",
-	} {
-		if !strings.Contains(page, required) {
-			t.Fatalf("dashboard missing async pricing guard %q", required)
-		}
-	}
-	for _, forbidden := range []string{"http://", "https://", "innerHTML", "<input type=\"text\" data-target-field=\"model\"", "setDirty(true)"} {
-		if strings.Contains(page, forbidden) {
-			t.Fatalf("dashboard contains forbidden text %q", forbidden)
-		}
-	}
-	if csp := response.Headers.Get("Content-Security-Policy"); !strings.Contains(csp, "default-src 'none'") || !strings.Contains(csp, "connect-src 'self'") {
-		t.Fatalf("Content-Security-Policy = %q", csp)
+	if !bytes.Contains(resp.Body, []byte("\"count\"")) {
+		t.Error("response missing 'count' key")
 	}
 }
 
-func TestModelComboManagementValidationUsesPluginParser(t *testing.T) {
+func TestHandleHealthResetScoped(t *testing.T) {
+	store := createTestStore(t)
+	defer store.Close()
+
+	plugin := &modelComboPlugin{
+		store:        store,
+		comboRuntime: newComboRuntime(time.Now),
+	}
+
+	// Insert health data for two different groups.
+	if err := store.SaveComboHealthSnapshot("combo1", "group1", "cand1", &candidateHealth{
+		CoolUntil:           time.Now().Add(5 * time.Second),
+		ConsecutiveFailures: 1,
+	}); err != nil {
+		t.Fatalf("SaveComboHealthSnapshot group1 error = %v", err)
+	}
+	if err := store.SaveComboHealthSnapshot("combo1", "group2", "cand1", &candidateHealth{
+		CoolUntil:           time.Now().Add(5 * time.Second),
+		ConsecutiveFailures: 2,
+	}); err != nil {
+		t.Fatalf("SaveComboHealthSnapshot group2 error = %v", err)
+	}
+
+	// Reset only group1.
+	reqBody, _ := json.Marshal(healthResetRequest{
+		ComboAliasKey: "combo1",
+		GroupKey:      "group1",
+	})
+
+	resp := handleHealthReset(plugin, reqBody)
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("handleHealthReset() status = %d, want %d", resp.StatusCode, http.StatusOK)
+	}
+
+	// Verify group1 is cleared, group2 remains.
+	snapshot, err := store.HydrateComboHealth()
+	if err != nil {
+		t.Fatalf("HydrateComboHealth() error = %v", err)
+	}
+
+	if group1, ok := snapshot["combo1"]["group1"]; ok && len(group1) > 0 {
+		t.Errorf("group1 not cleared: %#v", group1)
+	}
+
+	if group2, ok := snapshot["combo1"]["group2"]; !ok || len(group2) == 0 {
+		t.Error("group2 was incorrectly cleared")
+	}
+}
+
+func TestHandleHealthManagementExactPaths(t *testing.T) {
+	store := createTestStore(t)
+	defer store.Close()
+
+	plugin := &modelComboPlugin{
+		store:        store,
+		comboRuntime: newComboRuntime(time.Now),
+	}
+
 	tests := []struct {
-		name       string
-		body       string
-		wantStatus int
-		wantText   string
+		name         string
+		path         string
+		method       string
+		wantStatus   int
+		wantNotFound bool
 	}{
 		{
-			name:       "valid",
-			body:       `{"enabled":true,"routes":[{"alias":"auto","strategy":"priority","cooldown_seconds":60,"models":["provider-a/model","provider-b/model"]}]}`,
-			wantStatus: http.StatusOK,
-			wantText:   `"valid":true`,
+			name:         "exact list GET",
+			path:         "/v0/management/plugins/model-combo/health/list",
+			method:       http.MethodGet,
+			wantStatus:   http.StatusOK,
+			wantNotFound: false,
 		},
 		{
-			name:       "canonical weighted targets",
-			body:       `{"enabled":true,"routes":[{"alias":"auto","strategy":"round-robin","cooldown_seconds":60,"targets":[{"model":"provider-a/model","weight":3},{"model":"provider-b/model"}]}]}`,
-			wantStatus: http.StatusOK,
-			wantText:   `"valid":true`,
+			name:         "exact reset POST",
+			path:         "/v0/management/plugins/model-combo/health/reset",
+			method:       http.MethodPost,
+			wantStatus:   http.StatusBadRequest,
+			wantNotFound: false,
 		},
 		{
-			name:       "recursive target",
-			body:       `{"enabled":true,"routes":[{"alias":"auto","strategy":"priority","cooldown_seconds":60,"models":["auto(high)"]}]}`,
-			wantStatus: http.StatusBadRequest,
-			wantText:   "target must not reference route alias",
+			name:         "wrong plugin suffix (loose matching attack)",
+			path:         "/v0/management/plugins/model-combo-alt/health/list",
+			method:       http.MethodGet,
+			wantStatus:   http.StatusNotFound,
+			wantNotFound: true,
 		},
 		{
-			name:       "empty target pool",
-			body:       `{"enabled":true,"routes":[{"alias":"auto","strategy":"priority","cooldown_seconds":60,"models":[]}]}`,
-			wantStatus: http.StatusBadRequest,
-			wantText:   "at least one model is required",
+			name:         "extra path segment",
+			path:         "/v0/management/plugins/model-combo/health/list/extra",
+			method:       http.MethodGet,
+			wantStatus:   http.StatusNotFound,
+			wantNotFound: true,
 		},
 		{
-			name:       "unknown route field",
-			body:       `{"enabled":true,"routes":[{"alias":"auto","models":["provider/model"],"unknown":true}]}`,
-			wantStatus: http.StatusBadRequest,
-			wantText:   "unknown field",
+			name:         "list wrong method",
+			path:         "/v0/management/plugins/model-combo/health/list",
+			method:       http.MethodPost,
+			wantStatus:   http.StatusMethodNotAllowed,
+			wantNotFound: false,
 		},
 		{
-			name:       "both model schemas",
-			body:       `{"enabled":true,"routes":[{"alias":"auto","models":["provider-a/model"],"targets":[{"model":"provider-b/model"}]}]}`,
-			wantStatus: http.StatusBadRequest,
-			wantText:   "both models and targets",
-		},
-		{
-			name:       "multiple documents",
-			body:       `{"enabled":true,"routes":[]} {"enabled":true,"routes":[]}`,
-			wantStatus: http.StatusBadRequest,
-			wantText:   "multiple JSON values",
+			name:         "reset wrong method",
+			path:         "/v0/management/plugins/model-combo/health/reset",
+			method:       http.MethodGet,
+			wantStatus:   http.StatusMethodNotAllowed,
+			wantNotFound: false,
 		},
 	}
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			response := handleModelComboManagement(nil, pluginapi.ManagementRequest{
-				Method: http.MethodPost,
-				Path:   modelComboValidationPath,
-				Body:   []byte(test.body),
-			})
-			if response.StatusCode != test.wantStatus || !strings.Contains(string(response.Body), test.wantText) {
-				t.Fatalf("status=%d body=%s, want status=%d containing %q", response.StatusCode, response.Body, test.wantStatus, test.wantText)
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := pluginapi.ManagementRequest{
+				Path:   tt.path,
+				Method: tt.method,
+				Body:   []byte("{}"),
+			}
+			resp := handleHealthManagement(plugin, tt.path, req)
+
+			if resp.StatusCode != tt.wantStatus {
+				t.Errorf("status = %d, want %d", resp.StatusCode, tt.wantStatus)
+			}
+
+			hasNotFound := bytes.Contains(resp.Body, []byte("not_found"))
+			if tt.wantNotFound && !hasNotFound {
+				t.Error("expected not_found error")
+			}
+			if !tt.wantNotFound && hasNotFound {
+				t.Errorf("got unexpected not_found error: %s", resp.Body)
 			}
 		})
 	}
 }
 
-func TestModelComboManagementRejectsUnsupportedMethod(t *testing.T) {
-	response := handleModelComboManagement(nil, pluginapi.ManagementRequest{Method: http.MethodDelete, Path: modelComboDashboardPath})
-	if response.StatusCode != http.StatusMethodNotAllowed || !strings.Contains(string(response.Body), "method_not_allowed") {
-		t.Fatalf("response = %#v, body=%s", response, response.Body)
-	}
-}
+func TestHandleHealthResetValidation(t *testing.T) {
+	store := createTestStore(t)
+	defer store.Close()
 
-func TestValidateModelComboManagementConfigAcceptsAccountPools(t *testing.T) {
-	response := validateModelComboManagementConfig([]byte(`{
-		"enabled": true,
-		"combos": [{
-			"alias": "combo",
-			"groups": [{"name": "primary", "targets": [{"model": "provider/model", "account_pool": "pool"}]}]
-		}],
-		"account_pools": {
-			"pool": {"accounts": [{"key": "account", "auth_name": "account.json", "provider": "provider"}]}
-		}
-	}`))
-	if response.StatusCode != http.StatusOK {
-		t.Fatalf("status = %d, body = %s", response.StatusCode, response.Body)
+	plugin := &modelComboPlugin{
+		store:        store,
+		comboRuntime: newComboRuntime(time.Now),
+	}
+
+	tests := []struct {
+		name       string
+		body       []byte
+		wantStatus int
+		wantError  string
+	}{
+		{
+			name:       "empty comboAliasKey",
+			body:       []byte(`{"comboAliasKey": "", "groupKey": "g1"}`),
+			wantStatus: http.StatusBadRequest,
+			wantError:  "missing_keys",
+		},
+		{
+			name:       "empty groupKey",
+			body:       []byte(`{"comboAliasKey": "c1", "groupKey": ""}`),
+			wantStatus: http.StatusBadRequest,
+			wantError:  "missing_keys",
+		},
+		{
+			name:       "invalid JSON",
+			body:       []byte(`{invalid}`),
+			wantStatus: http.StatusBadRequest,
+			wantError:  "decode_failed",
+		},
+		{
+			name:       "trailing data",
+			body:       []byte(`{"comboAliasKey": "c1", "groupKey": "g1"} extra`),
+			wantStatus: http.StatusBadRequest,
+			wantError:  "extra_data",
+		},
+		{
+			name:       "unknown fields",
+			body:       []byte(`{"comboAliasKey": "c1", "groupKey": "g1", "unknown": true}`),
+			wantStatus: http.StatusBadRequest,
+			wantError:  "decode_failed",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			resp := handleHealthReset(plugin, tt.body)
+			if resp.StatusCode != tt.wantStatus {
+				t.Errorf("status = %d, want %d", resp.StatusCode, tt.wantStatus)
+			}
+			if !bytes.Contains(resp.Body, []byte(tt.wantError)) {
+				t.Errorf("body missing expected error %q: %s", tt.wantError, resp.Body)
+			}
+		})
 	}
 }

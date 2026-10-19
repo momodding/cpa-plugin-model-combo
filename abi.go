@@ -187,8 +187,8 @@ func ModelComboPluginShutdown() {
 	modelComboABIState.metadata = pluginapi.Metadata{}
 	modelComboABIState.Unlock()
 	modelComboABIState.inFlight.Wait()
-	if plugin != nil && plugin.store != nil {
-		_ = plugin.store.Close()
+	if plugin != nil {
+		_ = plugin.Shutdown()
 	}
 	C.model_combo_store_host(nil)
 }

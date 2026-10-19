@@ -3,6 +3,9 @@ package main
 import (
 	"context"
 	"fmt"
+	"os"
+	"strings"
+	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
 )
@@ -23,6 +26,22 @@ type modelComboPlugin struct {
 	attribution      *attributionTracker
 	modelsDevFetcher modelsDevCatalogFetcher
 	priceSync        *priceSyncState
+}
+
+func persistRuntimeComboHealth(store *usageStore, runtime *comboRuntime) error {
+	runtimeSnapshot := runtime.SnapshotHealth()
+	storeSnapshot := make(map[string]map[string]map[string]*candidateHealth)
+	for runtimeKey, groupMap := range runtimeSnapshot {
+		comboKey, groupKey, ok := strings.Cut(runtimeKey, "\x00")
+		if !ok {
+			continue
+		}
+		if storeSnapshot[comboKey] == nil {
+			storeSnapshot[comboKey] = make(map[string]map[string]*candidateHealth)
+		}
+		storeSnapshot[comboKey][groupKey] = groupMap
+	}
+	return store.ReplaceComboHealth(storeSnapshot)
 }
 
 var (
@@ -56,11 +75,49 @@ func newModelComboPlugin(configYAML []byte, previous *modelComboPlugin) (*modelC
 			priceSync = &priceSyncState{}
 		}
 		priceSync.mu.Lock()
+		// Persist combo health snapshot before reconfiguring store.
+		if store != nil {
+			if err := persistRuntimeComboHealth(store, previous.comboRuntime); err != nil {
+				fmt.Fprintf(os.Stderr, "warning: failed to persist combo health before reconfigure: %v\n", err)
+			}
+		}
 		if err := store.Reconfigure(cfg.DataPath, cfg.RetentionDays); err != nil {
 			priceSync.mu.Unlock()
 			return nil, pluginapi.Metadata{}, err
 		}
 		priceSync.mu.Unlock()
+		// Restore health for cloned runtime after reconfiguration.
+		if store != nil {
+			healthSnapshot, err := store.HydrateComboHealth()
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "warning: failed to hydrate combo health after reconfigure: %v\n", err)
+			} else if len(healthSnapshot) > 0 {
+				// Build 2-level map (gkey -> candidates) for RestoreHealth.
+				runtimeHealth := make(map[string]map[string]*candidateHealth)
+				for comboKey, groupMap := range healthSnapshot {
+					for groupKey, candMap := range groupMap {
+						runtimeKey := comboKey + "\x00" + groupKey
+						if runtimeHealth[runtimeKey] == nil {
+							runtimeHealth[runtimeKey] = make(map[string]*candidateHealth)
+						}
+						for ckey, health := range candMap {
+							runtimeHealth[runtimeKey][ckey] = health
+						}
+					}
+				}
+				cr.RestoreHealth(runtimeHealth)
+			}
+		}
+
+		// Attach callback after hydration to avoid persisting during restore.
+		if store != nil {
+			cr.SetMutateCallback(func(snapshot map[string]map[string]map[string]*candidateHealth) {
+				if err := store.PersistComboHealth(snapshot); err != nil {
+					fmt.Fprintf(os.Stderr, "warning: failed to persist combo health mutation: %v\n", err)
+				}
+			})
+		}
+
 	} else {
 		legacyRuntime.Sync(cfg.Routes)
 		cr.Sync(plans)
@@ -68,6 +125,39 @@ func newModelComboPlugin(configYAML []byte, previous *modelComboPlugin) (*modelC
 		if err != nil {
 			return nil, pluginapi.Metadata{}, err
 		}
+		// Hydrate combo health from persistent storage.
+		if store != nil {
+			healthSnapshot, err := store.HydrateComboHealth()
+			if err != nil {
+				// Log warning but continue; corrupted health is recoverable.
+				fmt.Fprintf(os.Stderr, "warning: failed to hydrate combo health: %v\n", err)
+			} else if len(healthSnapshot) > 0 {
+				// Build 2-level map (gkey -> candidates) for RestoreHealth.
+				runtimeHealth := make(map[string]map[string]*candidateHealth)
+				for comboKey, groupMap := range healthSnapshot {
+					for groupKey, candMap := range groupMap {
+						runtimeKey := comboKey + "\x00" + groupKey
+						if runtimeHealth[runtimeKey] == nil {
+							runtimeHealth[runtimeKey] = make(map[string]*candidateHealth)
+						}
+						for ckey, health := range candMap {
+							runtimeHealth[runtimeKey][ckey] = health
+						}
+					}
+				}
+				cr.RestoreHealth(runtimeHealth)
+			}
+		}
+
+		// Attach callback after hydration to avoid persisting during restore.
+		if store != nil {
+			cr.SetMutateCallback(func(snapshot map[string]map[string]map[string]*candidateHealth) {
+				if err := store.PersistComboHealth(snapshot); err != nil {
+					fmt.Fprintf(os.Stderr, "warning: failed to persist combo health mutation: %v\n", err)
+				}
+			})
+		}
+
 	}
 	plugin := &modelComboPlugin{
 		config:           cfg,
@@ -141,6 +231,27 @@ func (p *modelComboPlugin) InterceptRequestAfterAuth(_ context.Context, request 
 		p.attribution.updateDirectRequest(request)
 	}
 	return pluginapi.RequestInterceptResponse{}, nil
+}
+
+// Shutdown persists health state, prunes stale entries, and closes the usage store.
+func (p *modelComboPlugin) Shutdown() error {
+	if p == nil || p.store == nil {
+		return nil
+	}
+
+	if p.comboRuntime != nil {
+		// Persist complete current health snapshot before closing.
+		if err := persistRuntimeComboHealth(p.store, p.comboRuntime); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: failed to persist combo health on shutdown: %v\n", err)
+		}
+	}
+
+	// Prune expired health entries before closing.
+	if err := p.store.PruneComboHealth(24 * time.Hour); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: failed to prune combo health on shutdown: %v\n", err)
+	}
+
+	return p.store.Close()
 }
 
 func main() {}
