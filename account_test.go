@@ -168,3 +168,11 @@ func TestAccountCooldownExpiresWithDeterministicClock(t *testing.T) {
 		t.Fatalf("expected pool map to be deleted after sweeping all expired entries")
 	}
 }
+
+func TestAccountPlanSignatureIsUnambiguous(t *testing.T) {
+	left := newAccountPlan(accountPool{Name: "pool", Strategy: routeStrategyPriority, Accounts: []account{{Key: "a\x00b", AuthName: "c", Provider: "p", Weight: 1}}})
+	right := newAccountPlan(accountPool{Name: "pool", Strategy: routeStrategyPriority, Accounts: []account{{Key: "a", AuthName: "b\x00c", Provider: "p", Weight: 1}}})
+	if left.signature == right.signature {
+		t.Fatal("distinct account plans share signature")
+	}
+}

@@ -1,7 +1,9 @@
 package main
 
 import (
+	"encoding/json"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -33,16 +35,60 @@ func TestAttributionTrackerRoutedDirectAndConflict(t *testing.T) {
 	}
 }
 
-func TestAttributionTrackerRequiresMatchingOpaqueAuthID(t *testing.T) {
+func TestAttributionTrackerJoinsLogicalAccountDigestByAuthID(t *testing.T) {
 	now := time.Date(2026, 8, 19, 12, 0, 0, 0, time.UTC)
 	tracker := newAttributionTracker(func() time.Time { return now })
-	tracker.MarkRoutedWithAuth("auto", "gpt-5.4", nil, "opaque-auth-a")
+	tracker.setAccountDigestKey(testAccountDigestKey)
+	tracker.MarkRoutedWithAccount("auto", "gpt-5.4", nil, resolvedAccount{key: "pool-a", id: "opaque-auth-a"})
 
 	if got := tracker.Match(pluginapi.UsageRecord{Model: "gpt-5.4", AuthID: "opaque-auth-b", RequestedAt: now}); got.Kind != attributionUnresolved {
 		t.Fatalf("wrong account attribution = %#v", got)
 	}
-	if got := tracker.Match(pluginapi.UsageRecord{Model: "gpt-5.4", AuthID: "opaque-auth-a", RequestedAt: now}); got.Kind != attributionRouted || got.RouterModel != "auto" {
+	got := tracker.Match(pluginapi.UsageRecord{Model: "gpt-5.4", AuthID: "opaque-auth-a", RequestedAt: now})
+	if got.Kind != attributionRouted || got.RouterModel != "auto" {
 		t.Fatalf("matching account attribution = %#v", got)
+	}
+	if got.AccountDigest == "" {
+		t.Fatal("matching attribution lacks account digest")
+	}
+	for _, raw := range []string{"pool-a", "opaque-auth-a", "pool-a\x00opaque-auth-a"} {
+		if strings.Contains(got.AccountDigest, raw) {
+			t.Fatalf("account digest exposes %q: %#v", raw, got)
+		}
+	}
+}
+
+func TestAttributionDigestDistinguishesLogicalAccounts(t *testing.T) {
+	now := time.Date(2026, 8, 19, 12, 0, 0, 0, time.UTC)
+	tracker := newAttributionTracker(func() time.Time { return now })
+	tracker.setAccountDigestKey(testAccountDigestKey)
+	tracker.MarkRoutedWithAccount("auto", "gpt-5.4", nil, resolvedAccount{key: "pool-a", id: "auth-1"})
+	first := tracker.Match(pluginapi.UsageRecord{Model: "gpt-5.4", AuthID: "auth-1", RequestedAt: now})
+	tracker.MarkRoutedWithAccount("auto", "gpt-5.4", nil, resolvedAccount{key: "pool-b", id: "auth-1"})
+	second := tracker.Match(pluginapi.UsageRecord{Model: "gpt-5.4", AuthID: "auth-1", RequestedAt: now})
+	if first.AccountDigest == "" || second.AccountDigest == "" || first.AccountDigest == second.AccountDigest {
+		t.Fatalf("digests not distinct per logical account: %#v %#v", first, second)
+	}
+}
+
+func TestStoredUsageRecordKeepsOnlyAccountDigest(t *testing.T) {
+	now := time.Date(2026, 8, 19, 12, 0, 0, 0, time.UTC)
+	tracker := newAttributionTracker(func() time.Time { return now })
+	tracker.setAccountDigestKey(testAccountDigestKey)
+	tracker.MarkRoutedWithAccount("auto", "gpt-5.4", nil, resolvedAccount{key: "pool-secret", id: "auth-secret"})
+	record := pluginapi.UsageRecord{Model: "gpt-5.4", AuthID: "auth-secret", AuthIndex: "index-secret", RequestedAt: now}
+	result := tracker.Match(record)
+	stored, err := json.Marshal(storedRecordFromUsage(record, result))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(stored), `"account_digest":"`+result.AccountDigest+`"`) {
+		t.Fatalf("stored usage lacks account digest: %s", stored)
+	}
+	for _, secret := range []string{"pool-secret", "auth-secret", "index-secret"} {
+		if strings.Contains(string(stored), secret) {
+			t.Fatalf("stored usage leaks %q: %s", secret, stored)
+		}
 	}
 }
 
@@ -107,6 +153,27 @@ func TestMaskAPIKey(t *testing.T) {
 	for input, want := range map[string]string{"sk-client-ab": "sk******ab", "abcde": "******", "abcd": "******", "": ""} {
 		if got := maskAPIKey(input); got != want {
 			t.Fatalf("maskAPIKey(%q) = %q, want %q", input, got, want)
+		}
+	}
+}
+
+func TestStoredUsageRecordOmitsAccountIdentifiers(t *testing.T) {
+	now := time.Date(2026, 8, 19, 12, 0, 0, 0, time.UTC)
+	record := pluginapi.UsageRecord{
+		Provider:    "openai",
+		Model:       "gpt-5.4",
+		APIKey:      "sk-client-secret",
+		AuthID:      "opaque-auth-id-secret",
+		AuthIndex:   "auth-index-secret",
+		RequestedAt: now,
+	}
+	stored, err := json.Marshal(storedRecordFromUsage(record, attributionResult{Kind: attributionRouted, RouterModel: "auto"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, secret := range []string{"opaque-auth-id-secret", "auth-index-secret", "sk-client-secret"} {
+		if strings.Contains(string(stored), secret) {
+			t.Fatalf("stored usage leaks %q: %s", secret, stored)
 		}
 	}
 }

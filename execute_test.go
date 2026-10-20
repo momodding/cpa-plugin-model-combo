@@ -199,6 +199,63 @@ combos:
 	}
 }
 
+func TestExecuteWithHostFailsClosedWhenAuthListFails(t *testing.T) {
+	plugin := testComboPluginFromConfig(t, `
+account_pools:
+  pool:
+    strategy: priority
+    accounts:
+      - {key: primary, auth_name: primary, provider: openai}
+combos:
+  - alias: smart
+    groups:
+      - name: primary
+        targets: [{model: provider-a, account_pool: pool}]
+`)
+	host := &fakeModelHost{
+		listAuth: func() ([]pluginapi.HostAuthFileEntry, error) {
+			return nil, errors.New("auth list unavailable")
+		},
+	}
+	if _, err := plugin.executeWithHost(pluginapi.ExecutorRequest{Model: "smart"}, host); err == nil {
+		t.Fatal("executeWithHost() error = nil, want fail-closed error")
+	}
+	if len(host.executeCalls) != 0 {
+		t.Fatalf("execution requests = %#v, want none", host.executeCalls)
+	}
+}
+
+func TestExecuteWithHostAccountAttemptsConsumeMaxAttempts(t *testing.T) {
+	plugin := testComboPluginFromConfig(t, `
+resilience: {max_attempts: 1, base_backoff_ms: 0, max_backoff_ms: 0}
+account_pools:
+  pool:
+    strategy: priority
+    accounts:
+      - {key: first, auth_name: first, provider: openai}
+      - {key: second, auth_name: second, provider: openai}
+combos:
+  - alias: smart
+    groups:
+      - name: primary
+        targets: [{model: provider-a, account_pool: pool}]
+`)
+	host := &fakeModelHost{
+		listAuth: func() ([]pluginapi.HostAuthFileEntry, error) {
+			return []pluginapi.HostAuthFileEntry{{Name: "first", Provider: "openai", ID: "id-first"}, {Name: "second", Provider: "openai", ID: "id-second"}}, nil
+		},
+		execute: func(request pluginapi.HostModelExecutionRequest) (pluginapi.HostModelExecutionResponse, error) {
+			return pluginapi.HostModelExecutionResponse{StatusCode: http.StatusTooManyRequests, Body: []byte(`{"error":"busy"}`)}, nil
+		},
+	}
+	if _, err := plugin.executeWithHost(pluginapi.ExecutorRequest{Model: "smart"}, host); err == nil {
+		t.Fatal("executeWithHost() error = nil, want failure after budget")
+	}
+	if len(host.executeCalls) != 1 || host.executeCalls[0].AuthID != "id-first" {
+		t.Fatalf("execution requests = %#v, want one attempt pinned to id-first", host.executeCalls)
+	}
+}
+
 func TestExecuteWithHostRetriesAnotherPooledAccount(t *testing.T) {
 	plugin := testComboPluginFromConfig(t, `
 resilience: {max_attempts: 2, base_backoff_ms: 0, max_backoff_ms: 0}

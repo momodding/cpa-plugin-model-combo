@@ -19,7 +19,7 @@ import (
 )
 
 const (
-	usageStorageSchemaVersion = 2
+	usageStorageSchemaVersion = 3
 	sqliteBusyTimeoutMS       = 5000
 )
 
@@ -259,6 +259,7 @@ func initializeNewDatabaseV2(database *sql.DB) error {
 			combo_alias_key TEXT NOT NULL,
 			group_key TEXT NOT NULL,
 			candidate_key TEXT NOT NULL,
+			plan_fingerprint TEXT NOT NULL DEFAULT '',
 			snapshot_json BLOB NOT NULL,
 			updated_at_ns INTEGER NOT NULL,
 			PRIMARY KEY (combo_alias_key, group_key, candidate_key)
@@ -281,8 +282,14 @@ func initializeNewDatabaseV2(database *sql.DB) error {
 }
 
 func migrateStorageSchema(database *sql.DB, from, to int) error {
-	if from == 1 && to == 2 {
-		return migrateSchemaV1toV2(database)
+	if from == 1 && to == 3 {
+		if err := migrateSchemaV1toV2(database); err != nil {
+			return err
+		}
+		from = 2
+	}
+	if from == 2 && to == 3 {
+		return migrateSchemaV2toV3(database)
 	}
 	return fmt.Errorf("unsupported schema migration from %d to %d", from, to)
 }
@@ -317,6 +324,24 @@ func migrateSchemaV1toV2(database *sql.DB) error {
 
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("commit migration v1 to v2: %w", err)
+	}
+	return nil
+}
+
+func migrateSchemaV2toV3(database *sql.DB) error {
+	tx, err := database.Begin()
+	if err != nil {
+		return fmt.Errorf("begin migration v2 to v3: %w", err)
+	}
+	defer tx.Rollback()
+	if _, err := tx.Exec(`ALTER TABLE combo_health_v2 ADD COLUMN plan_fingerprint TEXT NOT NULL DEFAULT ''`); err != nil {
+		return fmt.Errorf("add combo health fingerprint: %w", err)
+	}
+	if _, err := tx.Exec(`UPDATE store_state SET storage_schema_version = ? WHERE id = 1`, 3); err != nil {
+		return fmt.Errorf("update schema version: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit migration v2 to v3: %w", err)
 	}
 	return nil
 }
@@ -901,31 +926,87 @@ func (store *usageStore) ResetComboHealth(comboAliasKey, groupKey string) error 
 
 // HydrateComboHealth loads all persisted combo health snapshots for runtime init.
 func (store *usageStore) HydrateComboHealth() (map[string]map[string]map[string]*candidateHealth, error) {
+	return store.hydrateComboHealth(nil)
+}
+
+// HydrateComboHealthForPlans restores only rows belonging to current plan.
+// It removes legacy, stale, malformed, unknown, and fingerprint-mismatched rows.
+func (store *usageStore) HydrateComboHealthForPlans(plans []comboPlan) (map[string]map[string]map[string]*candidateHealth, error) {
+	fingerprints := make(map[string]string)
+	candidates := make(map[string]map[string]struct{})
+	for _, plan := range plans {
+		for _, group := range plan.groups {
+			key := runtimeGroupKey(plan.aliasKey, group.groupKey)
+			fingerprints[key] = groupSignature(group)
+			known := make(map[string]struct{}, len(group.candidates))
+			for _, candidate := range group.candidates {
+				known[candidate.candidateKey] = struct{}{}
+			}
+			candidates[key] = known
+		}
+	}
+	return store.hydrateComboHealth(&healthPlanFilter{fingerprints: fingerprints, candidates: candidates})
+}
+
+type healthPlanFilter struct {
+	fingerprints map[string]string
+	candidates   map[string]map[string]struct{}
+}
+
+func normalizeCandidateHealth(health *candidateHealth) bool {
+	if health == nil {
+		return false
+	}
+	if health.ConsecutiveFailures < 0 {
+		health.ConsecutiveFailures = 0
+	}
+	if health.CircuitReopenCount < 0 {
+		health.CircuitReopenCount = 0
+	}
+	if !health.CircuitOpen {
+		health.CircuitOpenUntil = time.Time{}
+		health.HalfOpenOccupied = false
+	}
+	return true
+}
+
+func (store *usageStore) hydrateComboHealth(filter *healthPlanFilter) (map[string]map[string]map[string]*candidateHealth, error) {
 	store.mu.RLock()
 	db := store.db
 	store.mu.RUnlock()
 	if db == nil {
 		return nil, errors.New("usage database is closed")
 	}
-	rows, err := db.Query(`SELECT combo_alias_key, group_key, candidate_key, snapshot_json FROM combo_health_v2 ORDER BY combo_alias_key, group_key, candidate_key`)
+	rows, err := db.Query(`SELECT combo_alias_key, group_key, candidate_key, snapshot_json, plan_fingerprint FROM combo_health_v2 ORDER BY combo_alias_key, group_key, candidate_key`)
 	if err != nil {
 		return nil, fmt.Errorf("query health snapshots: %w", err)
 	}
 	defer rows.Close()
-
 	result := make(map[string]map[string]map[string]*candidateHealth)
+	var purge [][3]string
 	for rows.Next() {
-		var comboKey, groupKey, candidateKey string
+		var comboKey, groupKey, candidateKey, fingerprint string
 		var snapshotJSON []byte
-		if err := rows.Scan(&comboKey, &groupKey, &candidateKey, &snapshotJSON); err != nil {
+		if err := rows.Scan(&comboKey, &groupKey, &candidateKey, &snapshotJSON, &fingerprint); err != nil {
 			return nil, fmt.Errorf("scan health row: %w", err)
 		}
-
-		var snapshot candidateHealth
-		if err := json.Unmarshal(snapshotJSON, &snapshot); err != nil {
-			return nil, fmt.Errorf("unmarshal health snapshot for %s/%s/%s: %w", comboKey, groupKey, candidateKey, err)
+		key := runtimeGroupKey(comboKey, groupKey)
+		if filter != nil {
+			known, ok := filter.candidates[key]
+			if !ok || fingerprint == "" || fingerprint != filter.fingerprints[key] {
+				purge = append(purge, [3]string{comboKey, groupKey, candidateKey})
+				continue
+			}
+			if _, ok := known[candidateKey]; !ok {
+				purge = append(purge, [3]string{comboKey, groupKey, candidateKey})
+				continue
+			}
 		}
-
+		var snapshot candidateHealth
+		if err := json.Unmarshal(snapshotJSON, &snapshot); err != nil || !normalizeCandidateHealth(&snapshot) || !persistableCandidateHealth(&snapshot, time.Now()) {
+			purge = append(purge, [3]string{comboKey, groupKey, candidateKey})
+			continue
+		}
 		if result[comboKey] == nil {
 			result[comboKey] = make(map[string]map[string]*candidateHealth)
 		}
@@ -937,29 +1018,46 @@ func (store *usageStore) HydrateComboHealth() (map[string]map[string]map[string]
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("iterate health rows: %w", err)
 	}
+	for _, row := range purge {
+		if _, err := db.Exec(`DELETE FROM combo_health_v2 WHERE combo_alias_key = ? AND group_key = ? AND candidate_key = ?`, row[0], row[1], row[2]); err != nil {
+			return nil, fmt.Errorf("delete invalid health row: %w", err)
+		}
+	}
 	return result, nil
 }
 
-// PersistComboHealth merges supplied group snapshots. It replaces candidate rows
-// only in supplied groups, so a mutation callback cannot erase other groups.
+// PersistComboHealth merges supplied group snapshots without a plan fingerprint.
+// New callers must use PersistComboHealthForPlans.
 func (store *usageStore) PersistComboHealth(snapshot map[string]map[string]map[string]*candidateHealth) error {
-	return store.persistComboHealth(snapshot, false)
+	return store.persistComboHealth(snapshot, nil, false)
 }
-
-// ReplaceComboHealth replaces all persisted state with a complete runtime snapshot.
-// Callers use it only when reconciling configuration or shutting down.
 func (store *usageStore) ReplaceComboHealth(snapshot map[string]map[string]map[string]*candidateHealth) error {
-	return store.persistComboHealth(snapshot, true)
+	return store.persistComboHealth(snapshot, nil, true)
 }
 
-func (store *usageStore) persistComboHealth(snapshot map[string]map[string]map[string]*candidateHealth, replace bool) error {
+func healthPlanFingerprints(plans []comboPlan) map[string]string {
+	result := make(map[string]string)
+	for _, plan := range plans {
+		for _, group := range plan.groups {
+			result[runtimeGroupKey(plan.aliasKey, group.groupKey)] = groupSignature(group)
+		}
+	}
+	return result
+}
+func (store *usageStore) PersistComboHealthForPlans(snapshot map[string]map[string]map[string]*candidateHealth, plans []comboPlan) error {
+	return store.persistComboHealth(snapshot, healthPlanFingerprints(plans), false)
+}
+func (store *usageStore) ReplaceComboHealthForPlans(snapshot map[string]map[string]map[string]*candidateHealth, plans []comboPlan) error {
+	return store.persistComboHealth(snapshot, healthPlanFingerprints(plans), true)
+}
+
+func (store *usageStore) persistComboHealth(snapshot map[string]map[string]map[string]*candidateHealth, fingerprints map[string]string, replace bool) error {
 	store.mu.RLock()
 	db := store.db
 	store.mu.RUnlock()
 	if db == nil {
 		return errors.New("usage database is closed")
 	}
-
 	tx, err := db.Begin()
 	if err != nil {
 		return fmt.Errorf("begin transaction: %w", err)
@@ -970,19 +1068,20 @@ func (store *usageStore) persistComboHealth(snapshot map[string]map[string]map[s
 			return fmt.Errorf("clear health snapshots: %w", err)
 		}
 	}
-
 	now := time.Now()
 	for comboKey, groupMap := range snapshot {
 		for groupKey, candMap := range groupMap {
 			if replace {
-				// Replace mode: clear group, then insert only supplied candidates
 				if _, err := tx.Exec(`DELETE FROM combo_health_v2 WHERE combo_alias_key = ? AND group_key = ?`, comboKey, groupKey); err != nil {
 					return fmt.Errorf("clear health group %s/%s: %w", comboKey, groupKey, err)
 				}
 			}
+			fingerprint := ""
+			if fingerprints != nil {
+				fingerprint = fingerprints[runtimeGroupKey(comboKey, groupKey)]
+			}
 			for candidateKey, health := range candMap {
 				if !persistableCandidateHealth(health, now) {
-					// Fully healthy state: skip persist; delete if exists in merge mode
 					if !replace {
 						if _, err := tx.Exec(`DELETE FROM combo_health_v2 WHERE combo_alias_key = ? AND group_key = ? AND candidate_key = ?`, comboKey, groupKey, candidateKey); err != nil {
 							return fmt.Errorf("delete fully-healthy candidate %s/%s/%s: %w", comboKey, groupKey, candidateKey, err)
@@ -994,13 +1093,7 @@ func (store *usageStore) persistComboHealth(snapshot map[string]map[string]map[s
 				if err != nil {
 					return fmt.Errorf("marshal health for %s/%s/%s: %w", comboKey, groupKey, candidateKey, err)
 				}
-				if _, err := tx.Exec(`
-					INSERT INTO combo_health_v2(combo_alias_key, group_key, candidate_key, snapshot_json, updated_at_ns)
-					VALUES (?, ?, ?, ?, ?)
-					ON CONFLICT(combo_alias_key, group_key, candidate_key) DO UPDATE SET
-						snapshot_json = excluded.snapshot_json,
-						updated_at_ns = excluded.updated_at_ns
-				`, comboKey, groupKey, candidateKey, snapshotJSON, now.UnixNano()); err != nil {
+				if _, err := tx.Exec(`INSERT INTO combo_health_v2(combo_alias_key, group_key, candidate_key, snapshot_json, updated_at_ns, plan_fingerprint) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(combo_alias_key, group_key, candidate_key) DO UPDATE SET snapshot_json = excluded.snapshot_json, updated_at_ns = excluded.updated_at_ns, plan_fingerprint = excluded.plan_fingerprint`, comboKey, groupKey, candidateKey, snapshotJSON, now.UnixNano(), fingerprint); err != nil {
 					return fmt.Errorf("persist health %s/%s/%s: %w", comboKey, groupKey, candidateKey, err)
 				}
 			}
@@ -1017,14 +1110,9 @@ func (store *usageStore) PruneComboHealth(staleThreshold time.Duration) error {
 	if db == nil {
 		return errors.New("usage database is closed")
 	}
-	cutoffNs := time.Now().Add(-staleThreshold).UnixNano()
-	result, err := db.Exec(`DELETE FROM combo_health_v2 WHERE updated_at_ns < ?`, cutoffNs)
+	_, err := db.Exec(`DELETE FROM combo_health_v2 WHERE updated_at_ns < ?`, time.Now().Add(-staleThreshold).UnixNano())
 	if err != nil {
 		return fmt.Errorf("prune health: %w", err)
-	}
-	rows, _ := result.RowsAffected()
-	if rows > 0 {
-		// Vacuum is optional; skipped to avoid locking during prune.
 	}
 	return nil
 }

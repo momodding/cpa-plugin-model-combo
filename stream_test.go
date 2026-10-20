@@ -180,6 +180,27 @@ func TestExecuteStreamFailsOverBeforePayload(t *testing.T) {
 	}
 }
 
+func TestExecuteStreamFailsOverFromEmptyStreamBeforePayload(t *testing.T) {
+	plugin := testComboPlugin(testModelRoute("smart", routeStrategyPriority, 30, "provider-a", "provider-b"))
+	host := &fakeModelHost{reads: map[string][]pluginapi.HostModelStreamReadResponse{
+		"stream-a": {{Done: true}},
+		"stream-b": {{Payload: []byte(`data: {"model":"provider-b"}` + "\n\n"), Done: true}},
+	}}
+	host.start = func(request pluginapi.HostModelExecutionRequest) (pluginapi.HostModelStreamResponse, error) {
+		if request.Model == "provider-a" {
+			return pluginapi.HostModelStreamResponse{StatusCode: 200, StreamID: "stream-a"}, nil
+		}
+		return pluginapi.HostModelStreamResponse{StatusCode: 200, StreamID: "stream-b"}, nil
+	}
+	err := plugin.executeStreamWithHost(context.Background(), pluginapi.ExecutorRequest{Model: "smart", SourceFormat: "openai"}, "plugin-stream", host)
+	if err != nil {
+		t.Fatalf("executeStreamWithHost() error = %v", err)
+	}
+	if len(host.startCalls) != 2 || len(host.emitted) != 1 {
+		t.Fatalf("start calls = %d, emitted = %d", len(host.startCalls), len(host.emitted))
+	}
+}
+
 func TestExecuteStreamDoesNotRetryAfterPayload(t *testing.T) {
 	plugin := testComboPlugin(testModelRoute("smart", routeStrategyPriority, 30, "provider-a", "provider-b"))
 	host := &fakeModelHost{reads: map[string][]pluginapi.HostModelStreamReadResponse{

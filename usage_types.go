@@ -37,6 +37,7 @@ type storedUsageRecord struct {
 	RequestedAt         time.Time `json:"requested_at"`
 	Attribution         string    `json:"attribution"`
 	RouterModel         string    `json:"router_model,omitempty"`
+	AccountDigest       string    `json:"account_digest,omitempty"`
 	Provider            string    `json:"provider,omitempty"`
 	ExecutorType        string    `json:"executor_type,omitempty"`
 	AccountingMode      string    `json:"accounting_mode,omitempty"`

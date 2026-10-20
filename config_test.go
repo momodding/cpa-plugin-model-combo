@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -474,6 +475,85 @@ func TestDecodeRouterConfigValidatesAccountPoolStrategy(t *testing.T) {
 				t.Fatalf("decodeRouterConfig() accepted invalid account pool config: %s", name)
 			}
 		})
+	}
+}
+
+func TestDecodeRouterConfigRejectsAccountPoolIdentifiersAndRoutePolicy(t *testing.T) {
+	cases := map[string]string{
+		"auth_id in account":           `account_pools: {primary: {accounts: [{key: k, auth_name: a, provider: p, auth_id: x}]}}`,
+		"auth_index in account":        `account_pools: {primary: {accounts: [{key: k, auth_name: a, provider: p, auth_index: x}]}}`,
+		"account_pool on route":        `routes: [{alias: smart, account_pool: primary, models: [model-a]}]`,
+		"account_pool on route target": `routes: [{alias: smart, targets: [{model: model-a, account_pool: primary}]}]`,
+		"account_pool on model-routes": `model-routes: [{alias: smart, targets: [{model: model-a, account_pool: primary}]}]`,
+		"unknown combo account_pool":   `account_pools: {primary: {accounts: [{key: k, auth_name: a, provider: p}]}}` + "\n" + `combos: [{alias: demo, groups: [{name: primary, targets: [{model: model-a, account_pool: missing}]}]}]`,
+		"duplicate pool ignoring case": `account_pools: {Primary: {accounts: [{key: k, auth_name: a, provider: p}]}, primary: {accounts: [{key: k2, auth_name: b, provider: p}]}}`,
+		"duplicate key ignoring case":  `account_pools: {primary: {accounts: [{key: K, auth_name: a, provider: p}, {key: k, auth_name: b, provider: p}]}}`,
+		"round-robin pool strategy":    `account_pools: {primary: {strategy: round-robin, accounts: [{key: k, auth_name: a, provider: p}]}}`,
+		"priority above max":           `account_pools: {primary: {accounts: [{key: k, auth_name: a, provider: p, priority: 1000001}]}}`,
+		"blank auth_name":              `account_pools: {primary: {accounts: [{key: k, auth_name: " ", provider: p}]}}`,
+		"pool name too long":           `account_pools: {` + strings.Repeat("p", maxConfigNameLength+1) + `: {accounts: [{key: k, auth_name: a, provider: p}]}}`,
+		"account key too long":         `account_pools: {primary: {accounts: [{key: ` + strings.Repeat("k", maxConfigNameLength+1) + `, auth_name: a, provider: p}]}}`,
+	}
+	for name, raw := range cases {
+		t.Run(name, func(t *testing.T) {
+			if _, err := decodeRouterConfig([]byte(raw)); err == nil {
+				t.Fatalf("decodeRouterConfig() accepted invalid account pool config: %s", name)
+			}
+		})
+	}
+}
+
+func accountPoolsYAML(pools, accountsPerPool int) string {
+	var b strings.Builder
+	b.WriteString("account_pools:\n")
+	for p := range pools {
+		fmt.Fprintf(&b, "  pool-%d: {accounts: [", p)
+		for a := range accountsPerPool {
+			if a > 0 {
+				b.WriteString(", ")
+			}
+			fmt.Fprintf(&b, "{key: k%d, auth_name: a%d, provider: p}", a, a)
+		}
+		b.WriteString("]}\n")
+	}
+	return b.String()
+}
+
+func TestDecodeRouterConfigBoundsAccountPools(t *testing.T) {
+	if _, err := decodeRouterConfig([]byte(accountPoolsYAML(maxAccountPools, 1))); err != nil {
+		t.Fatalf("decodeRouterConfig() at pool limit error = %v", err)
+	}
+	if _, err := decodeRouterConfig([]byte(accountPoolsYAML(1, maxAccountsPerPool))); err != nil {
+		t.Fatalf("decodeRouterConfig() at account limit error = %v", err)
+	}
+	if _, err := decodeRouterConfig([]byte(accountPoolsYAML(maxAccountPools+1, 1))); err == nil {
+		t.Fatal("decodeRouterConfig() accepted too many account pools")
+	}
+	if _, err := decodeRouterConfig([]byte(accountPoolsYAML(1, maxAccountsPerPool+1))); err == nil {
+		t.Fatal("decodeRouterConfig() accepted too many accounts in one pool")
+	}
+	name := strings.Repeat("p", maxConfigNameLength)
+	if _, err := decodeRouterConfig([]byte(`account_pools: {` + name + `: {accounts: [{key: k, auth_name: a, provider: p}]}}`)); err != nil {
+		t.Fatalf("decodeRouterConfig() at name limit error = %v", err)
+	}
+}
+
+func TestDecodeRouterConfigNormalizesAccountPoolReferences(t *testing.T) {
+	cfg, err := decodeRouterConfig([]byte(`account_pools: {Primary: {strategy: weighted-round-robin, accounts: [{key: Main, auth_name: primary.json, provider: openai, weight: 3}, {key: backup, auth_name: backup.json, provider: openai}]}}
+combos: [{alias: demo, groups: [{name: primary, targets: [{model: model-a, account_pool: " primary "}, {model: model-b}]}]}]`))
+	if err != nil {
+		t.Fatalf("decodeRouterConfig() error = %v", err)
+	}
+	pool, ok := cfg.AccountPools["primary"]
+	if !ok || pool.Name != "Primary" || pool.Strategy != routeStrategyWeightedRoundRobin || len(pool.Accounts) != 2 {
+		t.Fatalf("AccountPools = %#v", cfg.AccountPools)
+	}
+	if pool.Accounts[0].Weight != 3 || pool.Accounts[1].Weight != defaultTargetWeight {
+		t.Fatalf("account weights = %d, %d", pool.Accounts[0].Weight, pool.Accounts[1].Weight)
+	}
+	targets := cfg.Combos[0].Groups[0].Targets
+	if targets[0].AccountPool != "primary" || targets[1].AccountPool != "" {
+		t.Fatalf("target account pools = %q, %q", targets[0].AccountPool, targets[1].AccountPool)
 	}
 }
 

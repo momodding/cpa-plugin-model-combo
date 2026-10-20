@@ -17,14 +17,22 @@ type accountPlan struct {
 func newAccountPlan(pool accountPool) *accountPlan {
 	plan := &accountPlan{name: pool.Name, strategy: pool.Strategy, accounts: append([]account(nil), pool.Accounts...)}
 	var b strings.Builder
-	b.WriteString(plan.name)
-	b.WriteByte(0)
-	b.WriteString(plan.strategy)
+	writeSignaturePart(&b, plan.name)
+	writeSignaturePart(&b, plan.strategy)
 	for _, account := range plan.accounts {
-		fmt.Fprintf(&b, "\x00%s\x00%s\x00%s\x00%d\x00%d", account.Key, account.AuthName, account.Provider, account.Priority, account.Weight)
+		writeSignaturePart(&b, account.Key)
+		writeSignaturePart(&b, account.AuthName)
+		writeSignaturePart(&b, account.Provider)
+		fmt.Fprintf(&b, "%d\x00%d\x00", account.Priority, account.Weight)
 	}
 	plan.signature = b.String()
 	return plan
+}
+
+// writeSignaturePart length-prefixes each config string so NUL bytes inside
+// values cannot make distinct account plans share one signature.
+func writeSignaturePart(b *strings.Builder, value string) {
+	fmt.Fprintf(b, "%d:%s", len(value), value)
 }
 
 type resolvedAccount struct{ key, id string }

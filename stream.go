@@ -50,6 +50,7 @@ func (p *modelComboPlugin) executeStreamWithHost(ctx context.Context, request pl
 	var retryAfter time.Duration
 	allGroupsHealthBlocked := true
 	var authEntries []pluginapi.HostAuthFileEntry
+	var authErr error
 	authListed := false
 
 	for _, group := range plan.groups {
@@ -68,11 +69,14 @@ func (p *modelComboPlugin) executeStreamWithHost(ctx context.Context, request pl
 			resolved := []resolvedAccount{{}}
 			if pooled {
 				if !authListed {
-					authEntries, lastErr = host.ListAuth()
+					authEntries, authErr = host.ListAuth()
 					authListed = true
 				}
 				resolved = resolveAccountPool(selection.candidate.accountPool, authEntries)
-				if lastErr != nil || len(resolved) == 0 {
+				if authErr != nil {
+					lastErr = authErr
+				}
+				if authErr != nil || len(resolved) == 0 {
 					ledger.markCandidateExhausted(selection.candidate.candidateKey)
 					p.comboRuntime.ReleaseProbe(plan, group, selection.candidate)
 					continue
@@ -96,8 +100,11 @@ func (p *modelComboPlugin) executeStreamWithHost(ctx context.Context, request pl
 				}
 				ledger.recordAttempt()
 				target := targetModel(requestedModel, selection.candidate.model)
-				p.attribution.MarkRoutedWithAuth(plan.alias, target, request.Headers, authID)
+				p.attribution.MarkRoutedWithAccount(plan.alias, target, request.Headers, selectedAccount)
 				receivedPayload, err := forwardStreamAttemptWithAuth(request, bodyInfo, target, requestedModel, pluginStreamID, host, authID)
+				if err == nil && !receivedPayload {
+					err = statusError{status: http.StatusBadGateway, message: "host model stream ended without payload"}
+				}
 				if err == nil {
 					p.comboRuntime.MarkSuccess(plan, group, selection.candidate)
 					return nil

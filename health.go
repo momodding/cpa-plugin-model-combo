@@ -89,6 +89,34 @@ func (r *comboRuntime) Sync(plans []comboPlan) {
 		}
 	}
 	r.groups = next
+	r.pruneAccountState(plans)
+}
+
+// pruneAccountState keeps account selector state only for pool signatures present in plans.
+// Changed, removed, or new pools never inherit stale state from earlier plans.
+func (r *comboRuntime) pruneAccountState(plans []comboPlan) {
+	live := make(map[string]struct{})
+	for _, plan := range plans {
+		for _, group := range plan.groups {
+			for _, candidate := range group.candidates {
+				if candidate.accountPool != nil {
+					live[candidate.accountPool.signature] = struct{}{}
+				}
+			}
+		}
+	}
+	r.accountMu.Lock()
+	defer r.accountMu.Unlock()
+	for signature := range r.accountCurrent {
+		if _, ok := live[signature]; !ok {
+			delete(r.accountCurrent, signature)
+		}
+	}
+	for signature := range r.accountCooldown {
+		if _, ok := live[signature]; !ok {
+			delete(r.accountCooldown, signature)
+		}
+	}
 }
 
 // Clone creates a new runtime preserving state for groups whose signature is unchanged.

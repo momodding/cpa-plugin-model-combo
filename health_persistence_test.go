@@ -9,7 +9,7 @@ import (
 	"time"
 )
 
-func TestSchemaV1toV2Migration(t *testing.T) {
+func TestSchemaV1toV3Migration(t *testing.T) {
 	dir := t.TempDir()
 	dbPath := filepath.Join(dir, "test.db")
 
@@ -50,12 +50,12 @@ func TestSchemaV1toV2Migration(t *testing.T) {
 		t.Fatalf("initializeSQLiteDatabase: %v", err)
 	}
 
-	// Verify v2 after migration
+	// Verify current schema after migration
 	if err := db.QueryRow("SELECT storage_schema_version FROM store_state WHERE id = 1").Scan(&version); err != nil {
 		t.Fatalf("query v2: %v", err)
 	}
-	if version != 2 {
-		t.Errorf("want v2, got %d", version)
+	if version != usageStorageSchemaVersion {
+		t.Errorf("want current schema v%d, got %d", usageStorageSchemaVersion, version)
 	}
 
 	// Verify combo_health_v2 table exists and is writable
@@ -65,7 +65,7 @@ func TestSchemaV1toV2Migration(t *testing.T) {
 	}
 }
 
-func TestNewDatabaseInitializationV2(t *testing.T) {
+func TestNewDatabaseInitializationV3(t *testing.T) {
 	dir := t.TempDir()
 	dbPath := filepath.Join(dir, "new.db")
 
@@ -77,18 +77,18 @@ func TestNewDatabaseInitializationV2(t *testing.T) {
 	db.SetMaxOpenConns(1)
 	defer db.Close()
 
-	// Initialize new database—should create v2 schema
+	// Initialize new database with current schema
 	if err := initializeSQLiteDatabase(db); err != nil {
 		t.Fatalf("initializeSQLiteDatabase new: %v", err)
 	}
 
-	// Verify v2
+	// Verify current schema
 	var version int
 	if err := db.QueryRow("SELECT storage_schema_version FROM store_state WHERE id = 1").Scan(&version); err != nil {
 		t.Fatalf("query: %v", err)
 	}
-	if version != 2 {
-		t.Errorf("want v2, got %d", version)
+	if version != usageStorageSchemaVersion {
+		t.Errorf("want current schema v%d, got %d", usageStorageSchemaVersion, version)
 	}
 
 	// Verify all v2 tables exist
@@ -147,18 +147,18 @@ func TestFreshDatabaseInitialization(t *testing.T) {
 	defer db.Close()
 
 	// Query store_state returns "no such table" error, not sql.ErrNoRows
-	// initializeSQLiteDatabase must detect this and create v2 schema
+	// initializeSQLiteDatabase must detect this and create current schema
 	if err := initializeSQLiteDatabase(db); err != nil {
 		t.Fatalf("initializeSQLiteDatabase fresh: %v", err)
 	}
 
-	// Verify v2 created
+	// Verify current schema created
 	var version int
 	if err := db.QueryRow("SELECT storage_schema_version FROM store_state WHERE id = 1").Scan(&version); err != nil {
 		t.Fatalf("query: %v", err)
 	}
-	if version != 2 {
-		t.Errorf("want v2, got %d", version)
+	if version != usageStorageSchemaVersion {
+		t.Errorf("want current schema v%d, got %d", usageStorageSchemaVersion, version)
 	}
 
 	// Verify combo_health_v2 exists and works
@@ -676,5 +676,89 @@ func TestRestoreHealthCallerPointerMutation(t *testing.T) {
 		if h.CircuitReopenCount != 1 {
 			t.Errorf("want CircuitReopenCount=1, got %d (mutation leaked)", h.CircuitReopenCount)
 		}
+	}
+}
+
+func TestHealthPersistenceResetDeletesAfterInFlightWrite(t *testing.T) {
+	plugin := testComboPlugin(testModelRoute("smart", routeStrategyPriority, 0, "a"))
+	plan := plugin.plans[0]
+	group := plan.groups[0]
+	candidate := group.candidates[0]
+	store, err := openUsageStore(filepath.Join(t.TempDir(), "test.db"), 30)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	p := startHealthPersistence(store, 1)
+	defer p.Close()
+	p.SetPlans(plugin.plans)
+	started := make(chan struct{})
+	release := make(chan struct{})
+	p.beforePersist = func() {
+		close(started)
+		<-release
+	}
+	runtime := plugin.comboRuntime
+	p.Enqueue(map[string]map[string]map[string]*candidateHealth{
+		plan.aliasKey: {group.groupKey: {candidate.candidateKey: {ConsecutiveFailures: 1}}},
+	})
+	<-started
+	resetDone := make(chan error, 1)
+	go func() {
+		resetDone <- runtime.ResetComboGroupHealthAndPersist(plan.aliasKey, group.groupKey, func() error {
+			if err := p.Flush(); err != nil {
+				return err
+			}
+			p.Cancel(plan.aliasKey, group.groupKey)
+			return store.ResetComboHealth(plan.aliasKey, group.groupKey)
+		})
+	}()
+	select {
+	case <-resetDone:
+		t.Fatal("reset completed before in-flight write released")
+	case <-time.After(50 * time.Millisecond):
+	}
+	close(release)
+	if err := <-resetDone; err != nil {
+		t.Fatal(err)
+	}
+	got, err := store.LoadComboHealthSnapshot(plan.aliasKey, group.groupKey, candidate.candidateKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != nil {
+		t.Fatalf("health row survived reset: %#v", got)
+	}
+}
+
+func TestHealthPersistenceFlushRetainsFailedSnapshot(t *testing.T) {
+	db, err := sql.Open("sqlite3", ":memory:")
+	if err != nil {
+		t.Fatalf("open database: %v", err)
+	}
+	store := &usageStore{db: db}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close database: %v", err)
+	}
+
+	persistence := startHealthPersistence(store, 1)
+	t.Cleanup(func() { _ = persistence.Close() })
+	snapshot := map[string]map[string]map[string]*candidateHealth{
+		"combo": {
+			"group": {"candidate": {}},
+		},
+	}
+	if !persistence.Enqueue(snapshot) {
+		t.Fatal("enqueue failed")
+	}
+	if err := persistence.Flush(); err == nil {
+		t.Fatal("Flush succeeded after failed write")
+	}
+
+	persistence.mu.Lock()
+	_, ok := persistence.pending[runtimeGroupKey("combo", "group")]
+	persistence.mu.Unlock()
+	if !ok {
+		t.Fatal("failed snapshot was lost")
 	}
 }

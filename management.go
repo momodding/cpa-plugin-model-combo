@@ -322,8 +322,14 @@ func handleHealthReset(plugin *modelComboPlugin, body []byte) pluginapi.Manageme
 		})
 	}
 
-	// Clear persisted and runtime health as one operation against mutation callbacks.
+	// Drain and cancel queued writes before deleting persisted state.
 	if err := plugin.comboRuntime.ResetComboGroupHealthAndPersist(req.ComboAliasKey, req.GroupKey, func() error {
+		if plugin.healthPersistence != nil {
+			if err := plugin.healthPersistence.Flush(); err != nil {
+				return err
+			}
+			plugin.healthPersistence.Cancel(req.ComboAliasKey, req.GroupKey)
+		}
 		return plugin.store.ResetComboHealth(req.ComboAliasKey, req.GroupKey)
 	}); err != nil {
 		return modelComboJSONResponse(http.StatusInternalServerError, map[string]any{

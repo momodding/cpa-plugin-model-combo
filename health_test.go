@@ -255,3 +255,20 @@ func TestRestoreHealthFromSnapshotDoesNotStrandCandidateWithHalfOpenOccupied(t *
 		t.Fatalf("after restore from storage, selectFromGroup failed to select, got selection = %#v", selection2)
 	}
 }
+
+func TestComboRuntimeSyncDropsStaleAccountState(t *testing.T) {
+	pool := newAccountPlan(accountPool{Name: "pool", Strategy: routeStrategyWeightedRoundRobin, Accounts: []account{{Key: "a", AuthName: "a.json", Provider: "openai", Weight: 1}}})
+	plans := []comboPlan{{aliasKey: "combo", groups: []groupPlan{{groupKey: "primary", candidates: []candidatePlan{{candidateKey: "combo\x00primary\x00model", accountPool: pool}}}}}}
+	runtime := newComboRuntime(time.Now)
+	runtime.Sync(plans)
+	runtime.accountCurrent[pool.signature] = map[string]int{"a": 3}
+	runtime.accountCooldown[pool.signature] = map[string]time.Time{"a\x00auth-a": time.Now().Add(time.Hour)}
+	runtime.Sync(nil)
+	runtime.Sync(plans)
+	if got := runtime.accountCurrent[pool.signature]; got != nil {
+		t.Fatalf("stale weight state retained = %#v", got)
+	}
+	if got := runtime.accountCooldown[pool.signature]; got != nil {
+		t.Fatalf("stale cooldown state retained = %#v", got)
+	}
+}

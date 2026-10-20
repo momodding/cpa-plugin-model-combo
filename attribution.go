@@ -4,6 +4,7 @@ import (
 	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
+	"encoding/hex"
 	"net/http"
 	"strings"
 	"sync"
@@ -24,8 +25,9 @@ const (
 )
 
 type attributionResult struct {
-	Kind        string
-	RouterModel string
+	Kind          string
+	RouterModel   string
+	AccountDigest string
 }
 
 type attributionMarker struct {
@@ -39,15 +41,18 @@ type attributionMarker struct {
 	hasCredential bool
 	auth          [sha256.Size]byte
 	hasAuth       bool
+	account       [sha256.Size]byte
+	hasAccount    bool
 }
 
 type attributionTracker struct {
-	mu        sync.Mutex
-	secret    [sha256.Size]byte
-	markers   []attributionMarker
-	nextID    uint64
-	lastPrune time.Time
-	now       func() time.Time
+	mu         sync.Mutex
+	secret     [sha256.Size]byte
+	accountKey []byte
+	markers    []attributionMarker
+	nextID     uint64
+	lastPrune  time.Time
+	now        func() time.Time
 }
 
 func newAttributionTracker(now func() time.Time) *attributionTracker {
@@ -66,31 +71,32 @@ func (tracker *attributionTracker) MarkDirect(request pluginapi.ModelRouteReques
 	if tracker == nil {
 		return
 	}
-	tracker.add(true, "", request.RequestedModel, request.Headers, "", "")
+	tracker.add(true, "", request.RequestedModel, request.Headers, "", resolvedAccount{})
 }
 
 func (tracker *attributionTracker) MarkRouted(routerModel, providerModel string, headers http.Header) {
-	tracker.MarkRoutedWithAuth(routerModel, providerModel, headers, "")
+	tracker.add(false, routerModel, providerModel, headers, "", resolvedAccount{})
 }
 
-func (tracker *attributionTracker) MarkRoutedWithAuth(routerModel, providerModel string, headers http.Header, authID string) {
+func (tracker *attributionTracker) MarkRoutedWithAccount(routerModel, providerModel string, headers http.Header, account resolvedAccount) {
 	if tracker == nil {
 		return
 	}
-	tracker.add(false, routerModel, providerModel, headers, "", authID)
+	tracker.add(false, routerModel, providerModel, headers, "", account)
 }
 
 func (tracker *attributionTracker) MarkDirectRequest(request pluginapi.RequestInterceptRequest) {
 	if tracker == nil {
 		return
 	}
-	tracker.add(true, "", firstNonEmpty(request.Model, request.RequestedModel), request.Headers, request.RequestID, "")
+	tracker.add(true, "", firstNonEmpty(request.Model, request.RequestedModel), request.Headers, request.RequestID, resolvedAccount{})
 }
 
-func (tracker *attributionTracker) add(direct bool, routerModel, providerModel string, headers http.Header, requestID, authID string) {
+func (tracker *attributionTracker) add(direct bool, routerModel, providerModel string, headers http.Header, requestID string, account resolvedAccount) {
 	credential := clientCredential(headers)
 	fingerprint, hasCredential := tracker.fingerprint(credential)
-	auth, hasAuth := tracker.fingerprint(strings.TrimSpace(authID))
+	auth, hasAuth := tracker.fingerprint(strings.TrimSpace(account.id))
+	accountDigest, hasAccount := tracker.accountDigest(account)
 	marker := attributionMarker{
 		requestID:     strings.TrimSpace(requestID),
 		direct:        direct,
@@ -101,6 +107,8 @@ func (tracker *attributionTracker) add(direct bool, routerModel, providerModel s
 		hasCredential: hasCredential,
 		auth:          auth,
 		hasAuth:       hasAuth,
+		account:       accountDigest,
+		hasAccount:    hasAccount,
 	}
 	tracker.mu.Lock()
 	tracker.pruneLocked(marker.startedAt)
@@ -112,6 +120,12 @@ func (tracker *attributionTracker) add(direct bool, routerModel, providerModel s
 		tracker.markers = tracker.markers[:maxAttributionMarks]
 	}
 	tracker.mu.Unlock()
+}
+
+// logicalAccountKey is the configured account identity (pool key only). The
+// opaque runtime ID is excluded so the digest survives auth rotation.
+func logicalAccountKey(account resolvedAccount) string {
+	return strings.TrimSpace(account.key)
 }
 
 func (tracker *attributionTracker) Match(record pluginapi.UsageRecord) attributionResult {
@@ -154,7 +168,11 @@ func (tracker *attributionTracker) Match(record pluginapi.UsageRecord) attributi
 	if marker.direct {
 		return attributionResult{Kind: attributionDirect}
 	}
-	return attributionResult{Kind: attributionRouted, RouterModel: marker.routerModel}
+	result := attributionResult{Kind: attributionRouted, RouterModel: marker.routerModel}
+	if marker.hasAccount {
+		result.AccountDigest = hex.EncodeToString(marker.account[:])
+	}
+	return result
 }
 
 func (tracker *attributionTracker) equallyCloseIndexesLocked(indexes []int, requestedAt time.Time, closest int) []int {
@@ -267,6 +285,32 @@ func (tracker *attributionTracker) fingerprint(value string) ([sha256.Size]byte,
 		return result, false
 	}
 	digest := hmac.New(sha256.New, tracker.secret[:])
+	_, _ = digest.Write([]byte(value))
+	copy(result[:], digest.Sum(nil))
+	return result, true
+}
+
+// setAccountDigestKey binds the durable key used for persisted account digests.
+// Until bound, account digests are unavailable and routed usage stays unattributed by account.
+func (tracker *attributionTracker) setAccountDigestKey(key []byte) {
+	if tracker == nil || len(key) == 0 {
+		return
+	}
+	tracker.mu.Lock()
+	tracker.accountKey = append([]byte(nil), key...)
+	tracker.mu.Unlock()
+}
+
+func (tracker *attributionTracker) accountDigest(account resolvedAccount) ([sha256.Size]byte, bool) {
+	var result [sha256.Size]byte
+	value := logicalAccountKey(account)
+	tracker.mu.Lock()
+	key := tracker.accountKey
+	tracker.mu.Unlock()
+	if value == "" || len(key) == 0 {
+		return result, false
+	}
+	digest := hmac.New(sha256.New, key)
 	_, _ = digest.Write([]byte(value))
 	copy(result[:], digest.Sum(nil))
 	return result, true
