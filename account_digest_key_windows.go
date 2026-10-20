@@ -21,6 +21,9 @@ func readSecureAccountDigestKey(path string) ([]byte, error) {
 	if attributes&windows.FILE_ATTRIBUTE_REPARSE_POINT != 0 {
 		return nil, errors.New("account digest key: file must not be a reparse point")
 	}
+	if attributes&windows.FILE_ATTRIBUTE_DIRECTORY != 0 {
+		return nil, errors.New("account digest key: file must be regular")
+	}
 	handle, err := windows.CreateFile(windows.StringToUTF16Ptr(path), windows.GENERIC_READ, windows.FILE_SHARE_READ, nil, windows.OPEN_EXISTING, windows.FILE_FLAG_OPEN_REPARSE_POINT, 0)
 	if err != nil {
 		return nil, fmt.Errorf("account digest key: open: %w", err)
@@ -33,6 +36,10 @@ func readSecureAccountDigestKey(path string) ([]byte, error) {
 	if info.FileAttributes&windows.FILE_ATTRIBUTE_REPARSE_POINT != 0 {
 		windows.CloseHandle(handle)
 		return nil, errors.New("account digest key: file must not be a reparse point")
+	}
+	if info.FileAttributes&windows.FILE_ATTRIBUTE_DIRECTORY != 0 {
+		windows.CloseHandle(handle)
+		return nil, errors.New("account digest key: file must be regular")
 	}
 	if err := validateAccountDigestKeyHandle(handle); err != nil {
 		windows.CloseHandle(handle)
