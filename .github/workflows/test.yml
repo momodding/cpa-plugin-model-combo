@@ -60,4 +60,4 @@ jobs:
           go env GOOS GOARCH CGO_ENABLED CC
           gcc --version
       - name: Test Windows SQLite paths and registration
-        run: go test ./... -run '^(TestSQLite|TestUsageStoreDataPaths|TestUsageStoreRelativePathPersists|TestABIRegistration|TestLegacy)' -count=1 -v
+        run: go test ./... -run '^(TestSQLite|TestUsageStoreDataPaths|TestUsageStoreRelativePathPersists|TestABIRegistration|TestLegacy|TestAccountDigestKey)' -count=1 -v

@@ -42,6 +42,18 @@ func TestAccountDigestKeyCreatedWithPrivateModeAndStableAcrossLoads(t *testing.T
 	}
 }
 
+func TestAccountDigestKeyRejectsNonRegularFile(t *testing.T) {
+	dataPath := filepath.Join(t.TempDir(), "usage.db")
+	keyPath := filepath.Join(filepath.Dir(dataPath), accountDigestKeyFile)
+	if err := os.Mkdir(keyPath, 0o700); err != nil {
+		t.Fatalf("create key directory: %v", err)
+	}
+	_, err := loadOrCreateAccountDigestKey(dataPath)
+	if err == nil || !strings.Contains(err.Error(), "file must be regular") {
+		t.Fatalf("load nonregular key error = %v", err)
+	}
+}
+
 func TestAccountDigestSurvivesTrackerRestart(t *testing.T) {
 	now := time.Date(2026, 8, 19, 12, 0, 0, 0, time.UTC)
 	dataPath := filepath.Join(t.TempDir(), "usage.db")
