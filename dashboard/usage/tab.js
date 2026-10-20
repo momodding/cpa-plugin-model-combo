@@ -16,9 +16,9 @@ function activateTab(name,moveFocus=false){
   document.getElementById('health-panel').hidden=!health;
   updateConfigurationActionsClearance();
   usageState.active=usage;
-  if(usage)startUsageDashboard();
-  else if(health){initializeHealthEvents();startHealthDashboard()}
-  else{clearChartActive(false);stopUsagePolling()}
+  if(usage){stopHealthPolling();startUsageDashboard()}
+  else if(health){stopUsagePolling();initializeHealthEvents();startHealthDashboard()}
+  else{clearChartActive(false);stopUsagePolling();stopHealthPolling()}
 }
 function handleTabKey(event){
   const current=tabs.indexOf(event.currentTarget);
@@ -29,7 +29,8 @@ function handleTabKey(event){
   else if(event.key==='End')next=tabs.length-1;
   else return;
   event.preventDefault();
-  activateTab(tabs[next].id==='usage-tab'?'usage':'configuration',true);
+  const tabId=tabs[next].id;
+  activateTab(tabId==='usage-tab'?'usage':tabId==='health-tab'?'health':'configuration',true);
 }
 function stopUsagePolling(){
   window.clearTimeout(usageState.filterTimer);

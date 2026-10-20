@@ -65,7 +65,7 @@ test('dashboard tabs retain their browser interactions after source assembly', {
     await page.locator('#workspace').waitFor({ state: 'visible' });
     await page.locator('#model-status[data-tone="ready"]').waitFor();
 
-    assert.equal(await page.locator('[role="tab"]').count(), 2);
+    assert.equal(await page.locator('[role="tab"]').count(), 3);
     assert.equal(await page.locator('#configuration-tab').getAttribute('aria-selected'), 'true');
     assert.deepEqual(await routeAliases(page), [], 'the disposable E2E instance should start without routes');
 

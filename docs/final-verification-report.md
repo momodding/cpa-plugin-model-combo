@@ -34,11 +34,13 @@ Focused re-verification of A–F gates with CPA v7.3.9 runtime constraints:
 | B (ABI health dispatch) | ✓ PASS | Route dispatch fixed; test passes |
 | C (Canonical WRR semantics) | ✓ PASS | Priority semantics, weight validation, dashboard preservation verified |
 | D (Discovered-account API) | BLOCKED | CPA v7.3.9 ManagementRequest lacks identity + host auth executor-only fields; authentication cannot proceed |
-| E (Health dashboard) | ✓ PASS (local) | Panel/tab/styles/DOM verified; node syntax ✓; asset embed test 10.613s; health endpoint test 6.220s; browser E2E blocked (Chromium/Podman unavailable) |
+| E (Health dashboard) | ✓ PASS (local) | Panel/tab/styles/DOM verified; node syntax ✓; asset embed test 10.613s; health endpoint test 6.220s; browser E2E unobserved. Docker lab first timed out pulling pinned `golang:1.26` at 600 seconds, then later completed; final bounded startup timed out at 600.25 seconds downloading Go dependencies, including CLIProxyAPI v7 `v7.3.9` and `go-sqlite3`. Compose never ran; Chromium unavailable. |
 | F (Session affinity) | BLOCKED | CPA v7.3.9 ExecutorRequest lacks session ID; config validation rejects enablement; SessionAffinity unit ✓ PASS 2.124s |
 
 **Unit suite closure:** `go test ./... -count=1` ✓ PASS 12.058s (macOS linker warning: object built for 13.0 linked 12.0).
 
-**CPA integration:** Pre-host package compile blocked by pre-existing account_test.go compile errors.
+**CPA integration:** FAILED before plugin registration. Command `CPA_SOURCE="$PWD/.cpa-source" go test -tags=integration . -run '^TestModelComboWithCLIProxyAPI$' -count=1 -v` exited 1 after CLIProxyAPI runtime `cgocallback` crash; this does not establish a plugin regression.
+CPA source requires Go `1.26.0`; failed local probe used host Go `1.27.0`. `tests/e2e/lab/lab.sh` uses Docker to build Linux c-shared plugin in `${CPA_E2E_GO_IMAGE:-docker.io/library/golang:1.26}`. Docker lab `random_key` finite generator was fixed and verified. First pinned `golang:1.26` pull timed out at 600 seconds, then later completed. Docker builder VCS stamping failed; Docker-only `-buildvcs=false` was added and `sh -n` passed. Final bounded startup timed out at 600.25 seconds while downloading Go dependencies, including CLIProxyAPI v7 `v7.3.9` and `go-sqlite3`. Compose never ran. No lab CPA container/process, readiness, health, or browser E2E was observed. Workspaces were retained. No retry followed final timeout. Native validation must use CPA image/toolchain matching this build, or CI.
+
 
 **F3 note:** Explicit acceptance absent; no F3 implementation claim.

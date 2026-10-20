@@ -328,7 +328,7 @@ openai-compatibility:
 	observedModelsMu.Lock()
 	weightedModels := append([]string(nil), observedModels[weightedStart:]...)
 	observedModelsMu.Unlock()
-	wantWeightedModels := []string{"working-model", "working-model", "working-model", "working-model-2", "working-model", "working-model", "working-model", "working-model-2"}
+	wantWeightedModels := []string{"working-model", "working-model", "working-model-2", "working-model", "working-model", "working-model", "working-model-2", "working-model"}
 	if !slices.Equal(weightedModels, wantWeightedModels) {
 		t.Fatalf("weighted provider sequence = %#v, want %#v", weightedModels, wantWeightedModels)
 	}

@@ -10,7 +10,7 @@
 | Category | Status | Evidence / Gap |
 |----------|--------|---|
 | **Repo/Plugin Identity & ABI** | PASS | Go 1.27.0 darwin/amd64. Observed: `make build` created `dist/model-combo.dylib` (target 13 linked 12). CPA v7.3.9 pinned in `go.mod` and CI workflow checkout at commit `61fdfc341b96178a8dcb53f2efc46cbc341d267c`. |
-| **CI Gates** | PASS | Observed `make check`: gofmt pass, unit tests pass, race detector pass, `go vet` pass. CI workflows (test.yml, release.yml) parse statically; CPA v7.3.9 integration test defined but unobserved. |
+| **CI Gates** | PASS (local) | `make check` passed: normal tests 11.938s, race tests 48.417s, and `go vet ./...`. Exact F2.5.1 GitHub Actions execution remains unobserved; native integration failed before plugin registration because CLIProxyAPI crashed. |
 | **Release Artifacts/Platforms** | BLOCKED | Release script started post-static-check (credential-free, nonpublishing); cancelled during image pull before cross-build, archive, checksum. Linux/amd64 `.so`, darwin amd64/arm64 `.dylib`, windows `.dll`, linux arm64 `.so` all remain unverified. |
 | **Podman Deployment** | BLOCKED | `deploy/podman/compose.yaml` static facts correct: plugin bind mount `/CLIProxyAPI/plugins`, persistent named volume `cpa_auth` at `/root/.cli-proxy-api`, data volume `cpa_data` at `/CLIProxyAPI/data`. CPA image pinned `docker.io/eceasy/cli-proxy-api:v7.3.9`. **Runtime execution unverified:** Podman unavailable on audit workstation; no live container health check, networking, graceful shutdown, or volume persistence observed. |
 | **Disposable CPA Integration** | BLOCKED | CI workflow defines CPA v7.3.9 integration test; pinned checkout at `61fdfc341b96178a8dcb53f2efc46cbc341d267c`. No local CPA host launch, auth flow simulation, or live plugin loading observed. |
@@ -102,14 +102,15 @@ Closure requires **implementation of every functional gap plus observed executio
 | **Focused WRR (F0→F2)** | PASS | 1.693s; semantics/priority/weight validation verified. Dashboard preservation confirmed. |
 | **ABI health dispatch (F2 B)** | PASS | Route dispatch fixed; test passes. |
 | **Discovered-account UI (F2 D)** | BLOCKED | **CPA v7.3.9 constraint:** ManagementRequest missing identity + host auth executor-only fields. Cannot authenticate. No authenticated discovered-account picker can be provided. |
-| **Health dashboard (F2 E)** | PASS (local) | Panel/tab/styles/DOM verified; node syntax ✓; asset embed 10.613s; health endpoint 6.220s. Browser E2E blocked: Chromium/Podman unavailable. |
+| **Health dashboard (F2 E)** | PASS (local) | Panel/tab/styles/DOM verified; node syntax ✓; asset embed 10.613s; health endpoint 6.220s. Browser E2E remains unobserved: Docker lab first timed out pulling pinned `golang:1.26` at 600 seconds, then later completed; final bounded startup timed out at 600.25 seconds downloading Go dependencies, including CLIProxyAPI v7 `v7.3.9` and `go-sqlite3`. Compose never ran; Chromium remains unavailable. |
 | **Session affinity (F2 F)** | BLOCKED | **CPA v7.3.9 constraint:** ExecutorRequest lacks session ID field. Config validation rejects enablement. SessionAffinity unit ✓ PASS 2.124s. Enabled affinity unavailable because trusted session identity absent. |
 
 ### CPA Integration Status
 
 - **Native build:** Pre-host package compile blocked by pre-existing account_test.go compile errors (not introduced F2.5).
 - **Unit closure:** `go test ./... -count=1` ✓ PASS 12.058s (macOS linker warning: 13.0→12.0, non-functional).
-- **Browser E2E:** Blocked (Chromium/Podman unavailable on audit workstation).
+- **Browser E2E:** Unobserved. Docker lab `random_key` finite generator was fixed and verified. First pinned `golang:1.26` pull timed out at 600 seconds, then later completed. Docker builder VCS stamping failed; Docker-only `-buildvcs=false` was added and `sh -n` passed. Final bounded startup timed out at 600.25 seconds while downloading Go dependencies, including CLIProxyAPI v7 `v7.3.9` and `go-sqlite3`. Compose never ran. No lab CPA container/process, readiness, health, or browser E2E was observed. Workspaces were retained. No retry followed final timeout.
+- **Native toolchain context:** CPA source requires Go `1.26.0`; failed local probe used host Go `1.27.0`. `tests/e2e/lab/lab.sh` uses Docker to build Linux c-shared plugin in `${CPA_E2E_GO_IMAGE:-docker.io/library/golang:1.26}`. Mismatch remains unproven; native validation must use CPA image/toolchain matching this build, or CI.
 
 ### Release Verdict Update
 
@@ -117,4 +118,4 @@ Closure requires **implementation of every functional gap plus observed executio
 1. CPA upgrades ManagementRequest and ExecutorRequest schemas (external dependency).
 2. F3 acceptance defined.
 3. Disposable CPA integration test passes.
-4. Browser E2E (Chromium/Podman) verified.
+4. Browser E2E (Chromium and Docker lab) verified.

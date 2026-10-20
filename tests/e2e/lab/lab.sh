@@ -17,7 +17,9 @@ EOF
 }
 
 random_key() {
-  LC_CTYPE=C tr -dc 'A-Za-z0-9' </dev/urandom | fold -w 48 | sed -n '1p'
+  key=$(LC_CTYPE=C dd if=/dev/urandom bs=1024 count=1 2>/dev/null | base64 | tr -dc 'A-Za-z0-9' | cut -c1-48)
+  [ "${#key}" -eq 48 ] || return 1
+  printf '%s\n' "$key"
 }
 
 render_config() {
@@ -27,9 +29,9 @@ render_config() {
     "$template_file" >"$workspace/config.yaml"
 }
 
-require_podman() {
-  if ! command -v podman >/dev/null 2>&1; then
-    printf '%s\n' 'podman is required' >&2
+require_docker() {
+  if ! command -v docker >/dev/null 2>&1; then
+    printf '%s\n' 'docker is required' >&2
     exit 1
   fi
 }
@@ -38,16 +40,16 @@ validate_compose() {
   CPA_E2E_WORKSPACE=$workspace \
   CPA_E2E_PORT=$port \
   CPA_E2E_IMAGE=$image \
-  podman compose -f "$compose_file" --project-directory "$workspace" config >/dev/null
+  docker compose -f "$compose_file" --project-directory "$workspace" config >/dev/null
 }
 
 build_plugin() {
-  podman run --rm \
+  docker run --rm \
     -v "$repo_dir:/src:ro" \
     -v "$workspace/plugins:/out" \
     -w /src \
     "${CPA_E2E_GO_IMAGE:-docker.io/library/golang:1.26}" \
-    sh -c 'CGO_ENABLED=1 GOOS=linux GOARCH=amd64 go build -trimpath -buildmode=c-shared -o /out/model-combo.so .'
+    sh -c 'CGO_ENABLED=1 GOOS=linux GOARCH=amd64 go build -buildvcs=false -trimpath -buildmode=c-shared -o /out/model-combo.so .'
 }
 
 start_lab() {
@@ -55,7 +57,7 @@ start_lab() {
     printf '%s\n' 'Refusing to start. Set CPA_E2E_ALLOW_START=1 for a disposable local lab.' >&2
     exit 2
   fi
-  require_podman
+  require_docker
   workspace=$(mktemp -d "${TMPDIR:-/tmp}/cpa-model-combo-e2e.XXXXXX")
   umask 077
   mkdir "$workspace/auth" "$workspace/plugins" "$workspace/logs" "$workspace/static"
@@ -72,7 +74,7 @@ start_lab() {
   CPA_E2E_WORKSPACE=$workspace \
   CPA_E2E_PORT=$port \
   CPA_E2E_IMAGE=$image \
-  podman compose -p "$project" -f "$compose_file" --project-directory "$workspace" up -d
+  docker compose -p "$project" -f "$compose_file" --project-directory "$workspace" up -d
   cat <<EOF
 Workspace: $workspace
 Browser E2E:
@@ -95,12 +97,12 @@ stop_lab() {
       exit 2
       ;;
   esac
-  require_podman
+  require_docker
   project=$(cat "$workspace/project-name")
   CPA_E2E_WORKSPACE=$workspace \
   CPA_E2E_PORT=${CPA_E2E_PORT:-18317} \
   CPA_E2E_IMAGE=${CPA_E2E_IMAGE:-docker.io/eceasy/cli-proxy-api:v7.3.9} \
-  podman compose -p "$project" -f "$compose_file" --project-directory "$workspace" down --volumes --remove-orphans
+  docker compose -p "$project" -f "$compose_file" --project-directory "$workspace" down --volumes --remove-orphans
   rm -rf "$workspace"
 }
 

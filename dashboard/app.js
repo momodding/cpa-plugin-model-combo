@@ -13,7 +13,7 @@ initializeHealthEvents();
 initializeUsageTableEvents();
 initializeUsageChartEvents();
 initializePricingEvents();
-document.addEventListener('visibilitychange',()=>{if(!usageState.active&&!healthState?.polling)return;if(document.hidden){stopUsagePolling();stopHealthPolling()}else{if(usageState.active)refreshUsage(false);if(healthState?.polling)refreshHealth()}});
+document.addEventListener('visibilitychange',()=>{if(document.hidden){if(usageState.active)stopUsagePolling();if(healthState?.active){healthState.polling=false;window.clearTimeout(healthState.pollTimer);healthState.pollTimer=0;if(healthState.controller)healthState.controller.abort();healthState.controller=null;healthState.inFlight=false;healthState.generation++}}else{if(usageState.active)refreshUsage(false);resumeHealthPolling()}});
 window.addEventListener('resize',()=>{updateConfigurationActionsClearance();window.clearTimeout(usageState.resizeTimer);usageState.resizeTimer=window.setTimeout(scheduleResponsiveDashboardRender,120)});
 document.addEventListener('keydown',event=>{
   if((event.ctrlKey||event.metaKey)&&event.key.toLowerCase()==='s'&&!workspaceEl.hidden&&!configurationPanelEl.hidden){event.preventDefault();if(state.dirty)saveConfiguration()}
