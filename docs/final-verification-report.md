@@ -44,3 +44,14 @@ CPA source requires Go `1.26.0`; failed local probe used host Go `1.27.0`. `test
 
 
 **F3 note:** Explicit acceptance absent; no F3 implementation claim.
+
+## Regression Tests Added 2026-10-21
+
+Two new permanent regression tests added to cover audit gaps identified during the account-routing audit:
+
+| Test | File | Result | Evidence |
+|---|---|---|---|
+| `TestExecuteStreamFailsClosedWhenAuthListFails` | `stream_test.go:96–121` | PASS (local) | `go test ./... -run '^TestExecuteStreamFailsClosedWhenAuthListFails$' -count=1`; `ok github.com/momodding/cpa-model-combo 1.806s`. Asserts: `executeStreamWithHost` returns HTTP 503 `model_combo_unavailable` and makes zero `StartStream` calls when `callbackModelHost.ListAuth` returns an error. Mirrors sync coverage in `execute_test.go:202–226`; was previously untested for the stream path. |
+| `TestSelectResolvedAccountPriorityUsesDeclarationOrderWithThreeAccounts` | `account_test.go:63–91` | PASS (local) | `go test ./... -run '^TestSelectResolvedAccountPriorityUsesDeclarationOrderWithThreeAccounts$' -count=1`; `ok github.com/momodding/cpa-model-combo 2.253s`. Asserts: `selectResolvedAccount` with three same-priority accounts returns them in declaration order (`first` → `second` → `third`) and returns `ok=false` once all are excluded via `excludeResolvedAccounts`. Tests audit finding 9 on declaration-order stability. |
+
+Both tests pass with macOS linker warning (object built for 13.0 linked 12.0); warning is non-functional environment debt. No production code was modified.
