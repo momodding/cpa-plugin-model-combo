@@ -58,7 +58,10 @@ Supported-platform results MUST report Linux and macOS evidence separately from 
 - Windows target/archive/cardinality gate was removed only from release packaging. Windows tests and ACL validation remain unchanged.
 - `bash -n .github/xgo/release.sh` passed.
  
-## Exit criteria
+- Nonpublishing xgo release build was attempted but stalled; worker was cancelled.
+- Cleanup inspection found no xgo container/image and no `cpa-model-combo-release.*` temp directory.
+- No release archives or checksums were produced or verified. Artifacts, checksums, and runtime compatibility remain **NOT PASS**.
+
 
 - Supported Linux and macOS deployment paths have repeatable checks and documented recovery procedures.
 - Docker, Colima, and Podman workflows report actionable failures.
