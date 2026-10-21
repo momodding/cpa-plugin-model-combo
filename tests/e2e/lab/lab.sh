@@ -53,6 +53,12 @@ render_config() {
     "$template_file" >"$workspace/config.yaml"
 }
 
+redact_stream() {
+  sed \
+    -e "s|${api_key:-__unset__}|[REDACTED]|g" \
+    -e "s|${management_key:-__unset__}|[REDACTED]|g"
+}
+
 require_docker() {
   if ! command -v docker >/dev/null 2>&1; then
     printf '%s\n' 'docker is required' >&2
@@ -123,6 +129,12 @@ require_workspace() {
       exit 2
       ;;
   esac
+  case "$workspace" in
+    *..*|*/./*)
+      printf '%s\n' 'refusing to use workspace outside temporary lab path' >&2
+      exit 2
+      ;;
+  esac
   if [ ! -f "$workspace/.cpa-model-combo-e2e-lab" ] || [ ! -f "$workspace/state" ]; then
     printf '%s\n' 'command requires a workspace created by this lab' >&2
     exit 2
@@ -140,6 +152,18 @@ require_workspace() {
     printf '%s\n' 'workspace state is incomplete' >&2
     exit 2
   fi
+  case "$project" in
+    cpa-model-combo-e2e-?*) ;;
+    *)
+      printf '%s\n' 'workspace state project is not a lab project' >&2
+      exit 2
+      ;;
+  esac
+  marker_project=$(sed -n 's/^project=//p' "$workspace/.cpa-model-combo-e2e-lab")
+  if [ "$marker_project" != "$project" ]; then
+    printf '%s\n' 'workspace marker does not match stored lab project' >&2
+    exit 2
+  fi
   require_owned_container "$container" cpa
   require_owned_container "$provider_container" fake-provider
 }
@@ -148,6 +172,8 @@ cleanup_failed_start() {
   status=$?
   trap - 0 HUP INT TERM
   if [ -n "${workspace:-}" ] && [ -f "$workspace/.cpa-model-combo-e2e-lab" ]; then
+    compose logs --no-color 2>&1 | redact_stream >"$workspace/logs/startup-failure.log" || true
+    printf 'startup failure logs (redacted): %s\n' "$workspace/logs/startup-failure.log" >&2
     compose down --volumes --remove-orphans >/dev/null 2>&1 || true
   fi
   exit "$status"
@@ -173,7 +199,7 @@ start_lab() {
   api_key=$(random_key)
   management_key=$(random_key)
   mkdir -p "$workspace/auth" "$workspace/plugins" "$workspace/logs" "$workspace/static"
-  : >"$workspace/.cpa-model-combo-e2e-lab"
+  printf 'project=%s\n' "$project" >"$workspace/.cpa-model-combo-e2e-lab"
   trap cleanup_failed_start 0 HUP INT TERM
 
   render_config
@@ -199,7 +225,7 @@ start_lab() {
   printf 'CPA E2E workspace: %s\n' "$workspace"
   printf 'CPA container: %s\n' "$container"
   printf 'CPA listening on http://127.0.0.1:%s\n' "$port"
-  printf 'DASHBOARD_URL=http://127.0.0.1:%s DASHBOARD_MANAGEMENT_KEY=%s DASHBOARD_E2E_ALLOW_MUTATIONS=1 npm run test:e2e\n' "$port" "$management_key"
+  printf '%s\n' "DASHBOARD_URL=http://127.0.0.1:$port DASHBOARD_MANAGEMENT_KEY=\$(sed -n 's/^management_key=//p' '$workspace/state') DASHBOARD_E2E_ALLOW_MUTATIONS=1 npm run test:e2e"
   printf 'Cleanup: %s down %s\n' "$lab_dir/lab.sh" "$workspace"
 }
 
@@ -225,7 +251,7 @@ status_lab() {
 logs_lab() {
   require_docker
   require_workspace "$1"
-  compose logs --no-color
+  compose logs --no-color | redact_stream
 }
 
 stop_lab() {
