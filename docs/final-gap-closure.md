@@ -4,13 +4,13 @@ Status: incomplete; production readiness `NO`.
 
 | Requirement | Status | Evidence / remaining work |
 |---|---|---|
-| Account-aware pool routing | PASS (local) | Unit coverage exercises strict pool resolution, priority/WRR selection, request-local exclusions, sync/stream account retry, and half-open reservation. |
-| Host auth protocol | PASS (local) | Callback tests prove `{}` for `host.auth.list`, CPA `{"files":[...]}` parsing, and exact opaque `AuthID` forwarding. |
-| Stream commitment and attribution privacy | PASS (local) | Stream tests cover alias rewrite and no retry after emitted payload; attribution test requires matching HMAC-auth fingerprint. |
+| Account-aware pool routing | PASS (local) | Observed `go test ./... -count=1 -race` PASS in 49.429s on 2026-10-21. Coverage includes strict pool resolution, three-account declaration-order priority selection, request-local exclusions, sync/stream account retry, stream fail-closed auth-list handling, and half-open reservation. |
+| Host auth protocol | PASS (local) | Callback tests prove `{}` for `host.auth.list`, CPA `{"files":[...]}` parsing, exact opaque `AuthID` forwarding, and one `ListAuth` snapshot per request. |
+| Stream commitment and attribution privacy | PASS (local) | Stream tests cover alias rewrite, no retry after emitted payload, fail-closed auth-list errors, and attribution requires matching HMAC-auth fingerprint. |
 | Durable combo-health storage and observability | PARTIAL (local) | Schema v1→v2 migration (`combo_health_v2` table); health mutations callback-persisted; health/list and health/reset management APIs; current-plan filtering + deep-copy restore. **Shutdown lifecycle:** Verified locally via deterministic ABI test (persist snapshot, prune 24h TTL, close store; reopen confirms obsolete pruned, nonhealthy configured health persists). Test ✓ PASS deterministic (1.682s) and race (3.555s). NOT production-ready (CPA integration unverified). See `docs/sprints/sprint-f1.md`. |
-| Discovered-account and health management UI | PASS (local) / BLOCKED | Health dashboard PASS: panel/tab/styles, DOM/textContent, group reset verified; node syntax ✓; endpoints ✓; browser blocked (Chromium/Podman unavailable). Discovered-account API blocked: CPA v7.3.9 ManagementRequest lacks identity and host auth entries (executor-only constraint). |
+| Discovered-account and health management UI | PASS (local) / BLOCKED | Health dashboard PASS: panel/tab/styles, DOM/textContent, group reset verified; node syntax ✓; endpoints ✓; browser install and execution remain unobserved after runtime harness HTTP 400. Managed `playwright` 1.63.0 replaced `playwright-core`. Discovered-account API blocked: CPA v7.3.9 ManagementRequest lacks identity and host auth entries (executor-only constraint). |
 | Privacy-safe session affinity | BLOCKED | Session affinity configuration rejected: CPA v7.3.9 ExecutorRequest lacks session ID field required by config validation. SessionAffinity unit test ✓ PASS 2.124s. Enabled affinity unavailable because trusted session identity absent in CPA request payload. |
-| Disposable CPA integration | BLOCKED | CI workflow defines pinned CPA v7.3.9 integration; no local/live CPA host execution observed. |
+| Disposable CPA integration | BLOCKED | CI workflow defines pinned CPA v7.3.9 integration; current static lab checks passed, but `tests/e2e/lab/lab.sh up` runtime remains unobserved after harness HTTP 400. No local/live CPA host execution observed. |
 | Browser E2E | BLOCKED | Requires disposable loopback CPA, management key, mutation opt-in, and Chromium. |
 | Release, platform, manual verification | BLOCKED | Workflows/scripts exist; no release, external platform, or manual execution observed. |
 
