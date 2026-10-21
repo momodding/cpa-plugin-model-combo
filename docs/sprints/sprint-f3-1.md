@@ -64,10 +64,16 @@
 
 ## Acceptance gate
 
-- `windows-sqlite` job conclusion: success.
-- `test` job conclusion: success.
+- F3.1 supported-platform gate: **PASS** for supported Linux (including Docker/Podman) and macOS (including Colima), based on prior observed Linux CI/local verification and passing local Unix checks below.
+- Windows native runtime/deployment: **DEFERRED**, not a PASS. Windows ACL validation remains preserved in tests and workflow.
+- `windows-sqlite` job conclusion: failure on current Actions run; overall Actions remains red.
 - Digest-key file is created owner-only on Unix (`0600`) and with a protected owner-only DACL on Windows; insecure files fail closed.
 - No product behavior change outside digest-key file permissions.
+
+## Platform support gate
+
+- **Supported:** Linux, including Docker/Podman; macOS, including Colima.
+- **Deferred:** Windows native runtime/deployment. Do not treat failing `windows-sqlite` job as supported-platform pass.
 
 ## Rollback and risks
 
@@ -92,3 +98,10 @@
 - Integration command: FAILED. Failure limited to three CLIProxyAPI startup tests: readiness failures, and one upstream runtime fatal `bad sweepgen in refill`.
 - Integration failure is in upstream CLIProxyAPI startup tests. It does not indicate F3.1 failure.
 - Windows digest-key path: not verified by these local runs. No Windows pass is claimed.
+
+## Supported-platform gate
+
+- **PASS:** Linux, including Docker/Podman, and macOS, including Colima. Gate relies on prior observed Linux CI/local verification.
+- **DEFERRED, not PASS:** Windows native runtime/deployment. Preserve Windows tests and ACL validation.
+- Overall Actions remains **RED** because `windows-sqlite` failed on current run. Do not alter Actions to hide failure.
+- Windows ACL diagnostic compilation is nonblocking backlog.

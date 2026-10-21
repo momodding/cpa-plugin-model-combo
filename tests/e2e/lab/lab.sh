@@ -5,6 +5,11 @@ lab_dir=$(CDPATH= cd "$(dirname "$0")" && pwd)
 repo_dir=$(CDPATH= cd "$lab_dir/../../.." && pwd)
 compose_file="$lab_dir/compose.yaml"
 template_file="$lab_dir/config.yaml.template"
+temp_dir=${TMPDIR:-/tmp}
+while [ "$temp_dir" != / ] && [ "${temp_dir%/}" != "$temp_dir" ]; do
+  temp_dir=${temp_dir%/}
+done
+
 
 usage() {
   cat <<'EOF'
@@ -58,7 +63,7 @@ start_lab() {
     exit 2
   fi
   require_docker
-  workspace=$(mktemp -d "${TMPDIR:-/tmp}/cpa-model-combo-e2e.XXXXXX")
+  workspace=$(mktemp -d "$temp_dir/cpa-model-combo-e2e.XXXXXX")
   umask 077
   mkdir "$workspace/auth" "$workspace/plugins" "$workspace/logs" "$workspace/static"
   : >"$workspace/.cpa-model-combo-e2e-lab"
@@ -66,8 +71,7 @@ start_lab() {
   image=${CPA_E2E_IMAGE:-docker.io/eceasy/cli-proxy-api:v7.3.9}
   api_key=$(random_key)
   management_key=$(random_key)
-  project="cpa-model-combo-e2e-$(basename "$workspace" | tr -cd '[:alnum:]')"
-  printf '%s\n' "$project" >"$workspace/project-name"
+  project="cpa-model-combo-e2e-$(basename "$workspace" | tr '[:upper:]' '[:lower:]' | tr -cd '[:alnum:]')"
   render_config
   validate_compose
   build_plugin
@@ -91,7 +95,7 @@ stop_lab() {
     exit 2
   fi
   case "$workspace" in
-    "${TMPDIR:-/tmp}"/cpa-model-combo-e2e.*) ;;
+    "$temp_dir"/cpa-model-combo-e2e.*) ;;
     *)
       printf '%s\n' 'refusing to remove workspace outside temporary lab path' >&2
       exit 2

@@ -121,7 +121,6 @@ jobs:
             "model-combo_${version}_linux_arm64.zip"
             "model-combo_${version}_darwin_amd64.zip"
             "model-combo_${version}_darwin_arm64.zip"
-            "model-combo_${version}_windows_amd64.zip"
           )
 
           cd release-assets
@@ -135,7 +134,7 @@ jobs:
             esac
           done
           mapfile -t archives < <(find . -maxdepth 1 -type f -name '*.zip' -printf '%f\n' | sort)
-          [[ "${#archives[@]}" -eq 5 ]]
+          [[ "${#archives[@]}" -eq 4 ]]
           sha256sum -c checksums.txt
       - name: Create or update GitHub release
         shell: bash

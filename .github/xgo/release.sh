@@ -64,7 +64,7 @@ container_id="$(docker create \
   -e FLAG_MOD= \
   -e FLAG_OBFUSCATE=false \
   -e GARBLE_FLAGS= \
-  -e 'TARGETS=linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64' \
+  -e 'TARGETS=linux/amd64 linux/arm64 darwin/amd64 darwin/arm64' \
   -e "GOPROXY=$(go env GOPROXY)" \
   -e "GOPRIVATE=$(go env GOPRIVATE)" \
   -e "GOEXPERIMENT=$(go env GOEXPERIMENT)" \
@@ -82,7 +82,6 @@ targets=(
   "linux|arm64|$dist_dir/raw/$plugin_id-linux-arm64.so|so"
   "darwin|amd64|$dist_dir/raw/$plugin_id-darwin-*-amd64.dylib|dylib"
   "darwin|arm64|$dist_dir/raw/$plugin_id-darwin-*-arm64.dylib|dylib"
-  "windows|amd64|$dist_dir/raw/$plugin_id-windows-*-amd64.dll|dll"
 )
 
 for target in "${targets[@]}"; do
@@ -132,7 +131,6 @@ expected=(
   "${plugin_id}_${version}_linux_arm64.zip"
   "${plugin_id}_${version}_darwin_amd64.zip"
   "${plugin_id}_${version}_darwin_arm64.zip"
-  "${plugin_id}_${version}_windows_amd64.zip"
 )
 for archive in "${expected[@]}"; do
   docker cp "${container_id}:/release/${archive}" "$dist_dir/$archive"
@@ -140,8 +138,8 @@ done
 docker cp "${container_id}:/release/checksums.txt" "$dist_dir/checksums.txt"
 
 mapfile -t archives < <(find "$dist_dir" -maxdepth 1 -type f -name "${plugin_id}_*.zip" -printf '%f\n' | sort)
-if [[ "${#archives[@]}" -ne 5 ]]; then
-  echo "expected five release archives, found ${#archives[@]}" >&2
+if [[ "${#archives[@]}" -ne 4 ]]; then
+  echo "expected four release archives, found ${#archives[@]}" >&2
   exit 1
 fi
 (cd "$dist_dir" && sha256sum -c checksums.txt)
