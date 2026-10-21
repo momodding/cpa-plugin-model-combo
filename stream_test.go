@@ -93,6 +93,33 @@ combos:
 	}
 }
 
+func TestExecuteStreamFailsClosedWhenAuthListFails(t *testing.T) {
+	plugin := testComboPluginFromConfig(t, `
+account_pools:
+  pool:
+    strategy: priority
+    accounts:
+      - {key: primary, auth_name: primary, provider: openai}
+combos:
+  - alias: smart
+    groups:
+      - name: primary
+        targets: [{model: provider-a, account_pool: pool}]
+`)
+	host := &fakeModelHost{
+		listAuth: func() ([]pluginapi.HostAuthFileEntry, error) {
+			return nil, errors.New("auth list unavailable")
+		},
+	}
+	err := plugin.executeStreamWithHost(context.Background(), pluginapi.ExecutorRequest{Model: "smart"}, "plugin-stream", host)
+	if statusFromError(err) != http.StatusServiceUnavailable || codeFromError(err, "") != "model_combo_unavailable" {
+		t.Fatalf("executeStreamWithHost() error = %v, want unavailable route error", err)
+	}
+	if len(host.startCalls) != 0 {
+		t.Fatalf("stream requests = %#v, want none", host.startCalls)
+	}
+}
+
 func TestExecuteStreamReturnsCooldownWhenAllCandidatesCooling(t *testing.T) {
 	plugin := testComboPlugin(testModelRoute("smart", routeStrategyPriority, 30, "provider-a"))
 	plan := plugin.plans[0]

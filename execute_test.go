@@ -516,3 +516,70 @@ func TestHostRequestWithAuthPinsExactID(t *testing.T) {
 		t.Fatalf("AuthID = %q, want exact pin", got.AuthID)
 	}
 }
+
+// TestExecuteWithHostListsAuthOnceForMultiplePools verifies that a request
+// spanning two groups that each reference a different account pool calls
+// host.ListAuth exactly once.  Each pool resolves its own subset of the
+// shared snapshot; the authListed guard must not cause group B to reuse
+// group A's resolved accounts.
+func TestExecuteWithHostListsAuthOnceForMultiplePools(t *testing.T) {
+	plugin := testComboPluginFromConfig(t, `
+resilience: {max_attempts: 4, base_backoff_ms: 0, max_backoff_ms: 0}
+account_pools:
+  pool-a:
+    strategy: priority
+    accounts:
+      - {key: acct-a, auth_name: entry-a, provider: openai}
+  pool-b:
+    strategy: priority
+    accounts:
+      - {key: acct-b, auth_name: entry-b, provider: openai}
+combos:
+  - alias: smart
+    groups:
+      - name: primary
+        targets:
+          - model: provider-a
+            account_pool: pool-a
+      - name: fallback
+        strategy: priority
+        targets:
+          - model: provider-b
+            account_pool: pool-b
+`)
+	listAuthCalls := 0
+	host := &fakeModelHost{
+		listAuth: func() ([]pluginapi.HostAuthFileEntry, error) {
+			listAuthCalls++
+			return []pluginapi.HostAuthFileEntry{
+				{Name: "entry-a", Provider: "openai", ID: "id-for-a"},
+				{Name: "entry-b", Provider: "openai", ID: "id-for-b"},
+			}, nil
+		},
+		execute: func(request pluginapi.HostModelExecutionRequest) (pluginapi.HostModelExecutionResponse, error) {
+			if request.Model == "provider-a" {
+				// primary group fails so execution falls through to fallback
+				return pluginapi.HostModelExecutionResponse{StatusCode: http.StatusServiceUnavailable}, nil
+			}
+			return pluginapi.HostModelExecutionResponse{StatusCode: http.StatusOK, Body: []byte(`{"model":"provider-b"}`)}, nil
+		},
+	}
+	_, err := plugin.executeWithHost(pluginapi.ExecutorRequest{Model: "smart"}, host)
+	if err != nil {
+		t.Fatalf("executeWithHost() error = %v", err)
+	}
+	// ListAuth must be called exactly once regardless of how many pools are encountered.
+	if listAuthCalls != 1 {
+		t.Errorf("ListAuth called %d time(s), want exactly 1", listAuthCalls)
+	}
+	// Each group must resolve to its own pool's account, not the other pool's.
+	if len(host.executeCalls) != 2 {
+		t.Fatalf("executeCalls = %d, want 2", len(host.executeCalls))
+	}
+	if host.executeCalls[0].AuthID != "id-for-a" {
+		t.Errorf("primary group AuthID = %q, want id-for-a", host.executeCalls[0].AuthID)
+	}
+	if host.executeCalls[1].AuthID != "id-for-b" {
+		t.Errorf("fallback group AuthID = %q, want id-for-b", host.executeCalls[1].AuthID)
+	}
+}

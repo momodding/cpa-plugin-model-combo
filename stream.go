@@ -68,6 +68,12 @@ func (p *modelComboPlugin) executeStreamWithHost(ctx context.Context, request pl
 			pooled := selection.candidate.accountPool != nil
 			resolved := []resolvedAccount{{}}
 			if pooled {
+				// One ListAuth fetch per request is correct: the snapshot
+				// represents the host's auth state at request time and is
+				// shared across all groups and pools.  resolveAccountPool
+				// filters the snapshot by each pool's own account list, so
+				// different pools in different groups each produce their own
+				// independent resolved slice from the same snapshot.
 				if !authListed {
 					authEntries, authErr = host.ListAuth()
 					authListed = true

@@ -60,6 +60,36 @@ func TestSelectResolvedAccountUsesLowestAvailablePriority(t *testing.T) {
 	}
 }
 
+func TestSelectResolvedAccountPriorityUsesDeclarationOrderWithThreeAccounts(t *testing.T) {
+	plan := newAccountPlan(accountPool{
+		Name: "pool", Strategy: routeStrategyPriority,
+		Accounts: []account{
+			{Key: "first", Priority: 0, Weight: 1},
+			{Key: "second", Priority: 0, Weight: 1},
+			{Key: "third", Priority: 0, Weight: 1},
+		},
+	})
+	all := []resolvedAccount{
+		{key: "first", id: "auth-first"},
+		{key: "second", id: "auth-second"},
+		{key: "third", id: "auth-third"},
+	}
+	runtime := newComboRuntime(nil)
+	attempted := make(map[string]struct{})
+	want := []string{"first", "second", "third"}
+	for _, wantKey := range want {
+		available := excludeResolvedAccounts(all, attempted)
+		got, ok := selectResolvedAccount(runtime, plan, available)
+		if !ok || got.key != wantKey {
+			t.Fatalf("selectResolvedAccount() = %#v %v, want key %q", got, ok, wantKey)
+		}
+		attempted[got.key+"\x00"+got.id] = struct{}{}
+	}
+	if _, ok := selectResolvedAccount(runtime, plan, excludeResolvedAccounts(all, attempted)); ok {
+		t.Fatal("selectResolvedAccount() returned an account after all three exhausted")
+	}
+}
+
 func TestSelectResolvedAccountUsesSmoothWeightedRoundRobin(t *testing.T) {
 	plan := newAccountPlan(accountPool{Name: "weighted", Strategy: routeStrategyWeightedRoundRobin, Accounts: []account{
 		{Key: "a", Priority: 0, Weight: 2},
