@@ -13,6 +13,8 @@ import (
 	"golang.org/x/sys/windows"
 )
 
+const accountDigestKeyFileAllAccess = windows.STANDARD_RIGHTS_REQUIRED | windows.SYNCHRONIZE | 0x1ff
+
 func readSecureAccountDigestKey(path string) ([]byte, error) {
 	attributes, err := windows.GetFileAttributes(windows.StringToUTF16Ptr(path))
 	if err != nil {
@@ -125,7 +127,7 @@ func validateAccountDigestKeyHandle(handle windows.Handle) error {
 		return errors.New("account digest key: file security must use protected DACL")
 	}
 	ace := (*windows.ACCESS_ALLOWED_ACE)(unsafe.Add(unsafe.Pointer(dacl), 8))
-	if ace.Header.AceType != windows.ACCESS_ALLOWED_ACE_TYPE || ace.Header.AceFlags&windows.INHERITED_ACE != 0 || ace.Mask != windows.GENERIC_ALL || !(*windows.SID)(unsafe.Pointer(&ace.SidStart)).Equals(owner) {
+	if ace.Header.AceType != windows.ACCESS_ALLOWED_ACE_TYPE || ace.Header.AceFlags&windows.INHERITED_ACE != 0 || (ace.Mask != windows.GENERIC_ALL && ace.Mask != accountDigestKeyFileAllAccess) || !(*windows.SID)(unsafe.Pointer(&ace.SidStart)).Equals(owner) {
 		return errors.New("account digest key: file security must grant only current user full control")
 	}
 	return nil

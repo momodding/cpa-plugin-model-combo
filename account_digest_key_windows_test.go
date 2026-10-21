@@ -62,7 +62,7 @@ func TestAccountDigestKeyCreatedACLDiagnostic(t *testing.T) {
 	}
 
 	ace := (*windows.ACCESS_ALLOWED_ACE)(unsafe.Add(unsafe.Pointer(dacl), 8))
-	fileAllAccess := windows.STANDARD_RIGHTS_REQUIRED | windows.SYNCHRONIZE | 0x1ff
+	fileAllAccess := accountDigestKeyFileAllAccess
 	aceSID := (*windows.SID)(unsafe.Add(unsafe.Pointer(ace), unsafe.Offsetof(ace.SidStart)))
 	t.Logf("ace_type=%d ace_flags=%d access_mask=0x%08x ace_sid_matches_owner=%t mask_equals_generic_all=%t mask_equals_file_all_access=%t exact_file_all_access=0x%08x", ace.Header.AceType, ace.Header.AceFlags, ace.Mask, aceSID.Equals(owner), ace.Mask == windows.GENERIC_ALL, ace.Mask == fileAllAccess, fileAllAccess)
 }
