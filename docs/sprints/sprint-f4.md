@@ -36,10 +36,28 @@ Supported-platform results MUST report Linux and macOS evidence separately from 
 
 - Node `v22.23.2` and npm `10.9.8` were available.
 - `test:e2e` is `node --test tests/e2e/dashboard.test.mjs`.
-- `playwright-core` version is `1.63.0`.
+- `playwright` is the package dependency; `dashboard.test.mjs` defaults `chromium.launch()` to Playwright-managed browser provisioning. Installation and execution were unobserved.
 - Chrome app was absent. `chromium`, `chromium-browser`, and `google-chrome` were unresolved.
 - CPA lab remained unavailable because of the prior 600-second plugin-build timeout.
 - Browser E2E was not run and is **NOT PASS**. No browser PASS is claimed.
+## F4.1 disposable lab implementation evidence
+
+Source inspection confirms the lab now provides:
+
+- Dynamic loopback port: Compose publishes CPA target port `8317` with `CPA_E2E_PORT` defaulting to `0`; `lab.sh` discovers the assigned port and probes `127.0.0.1`.
+- Unique project/workspace: each run uses a private temporary workspace and a unique Compose project suffix. Workspace paths hold generated config, auth, plugins, logs, and static files.
+- State ownership checks: container labels identify Compose project, service, and lab ownership. Lifecycle commands reject containers or workspaces that do not match expected ownership.
+- Fake provider service DNS: config routes the `fake` provider to `http://fake-provider:19080/v1` on the internal `lab` network. Health checks use `/health`.
+- Dedicated caches: plugin builds use separate Go module and build caches under the configurable `CPA_E2E_CACHE_DIR`, rather than the workspace.
+- Browser setup: `package.json` uses `playwright`, and `dashboard.test.mjs` defaults `chromium.launch()` to Playwright-managed browser provisioning. Installation and execution are unobserved.
+
+Static verification observed:
+
+- `sh -n tests/e2e/lab/lab.sh` passed.
+- `docker compose -f tests/e2e/lab/compose.yaml config` completed in a private temporary workspace with exit 0.
+- `node --check tests/e2e/dashboard.test.mjs` passed.
+
+Lab startup attempt began, but tool harness failed with HTTP 400 before outcome. No runtime PASS is claimed. Streaming, persistence, browser execution, CI, cleanup, and platform acceptance remain unobserved. Fake-provider streaming behavior is source-present only.
 
 ## F4-D Podman evidence
 

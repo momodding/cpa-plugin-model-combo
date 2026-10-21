@@ -1,9 +1,8 @@
 import assert from 'node:assert/strict';
 import { existsSync } from 'node:fs';
 import { test } from 'node:test';
-import { chromium } from 'playwright-core';
+import { chromium } from 'playwright';
 
-const defaultChrome = '/usr/bin/google-chrome';
 
 function localDateTime(date) {
   const local = new Date(date.getTime() - date.getTimezoneOffset() * 60_000);
@@ -33,12 +32,14 @@ async function waitForUsageReady(page) {
 test('dashboard tabs retain their browser interactions after source assembly', { timeout: 120_000 }, async () => {
   const dashboardUrl = process.env.DASHBOARD_URL;
   const managementKey = process.env.DASHBOARD_MANAGEMENT_KEY;
-  const executablePath = process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE || defaultChrome;
+  const executablePath = process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE;
 
   assert.ok(dashboardUrl, 'DASHBOARD_URL must point to a disposable local CPA instance');
   assert.ok(managementKey, 'DASHBOARD_MANAGEMENT_KEY must be set for that instance');
   assert.equal(process.env.DASHBOARD_E2E_ALLOW_MUTATIONS, '1', 'set DASHBOARD_E2E_ALLOW_MUTATIONS=1 only for an isolated test instance');
-  assert.ok(existsSync(executablePath), `Chromium executable does not exist: ${executablePath}`);
+  if (executablePath) {
+    assert.ok(existsSync(executablePath), `Chromium executable does not exist: ${executablePath}`);
+  }
 
   const parsedUrl = new URL(dashboardUrl);
   assert.ok(['127.0.0.1', 'localhost', '::1'].includes(parsedUrl.hostname), 'DASHBOARD_URL must use loopback');

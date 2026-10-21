@@ -10,14 +10,13 @@ while [ "$temp_dir" != / ] && [ "${temp_dir%/}" != "$temp_dir" ]; do
   temp_dir=${temp_dir%/}
 done
 
-
 usage() {
   cat <<'EOF'
-Usage: tests/e2e/lab/lab.sh up|down [workspace]
+Usage: tests/e2e/lab/lab.sh up|status|logs|down [workspace]
 
 up requires CPA_E2E_ALLOW_START=1. It creates a private temporary workspace,
-builds a Linux model-combo.so, starts disposable CPA, and prints browser test exports.
-down requires the workspace path printed by up and removes only a marked lab workspace.
+builds a Linux model-combo.so, and starts a disposable CPA lab.
+status, logs, and down require the workspace path printed by up.
 EOF
 }
 
@@ -25,6 +24,26 @@ random_key() {
   key=$(LC_CTYPE=C dd if=/dev/urandom bs=1024 count=1 2>/dev/null | base64 | tr -dc 'A-Za-z0-9' | cut -c1-48)
   [ "${#key}" -eq 48 ] || return 1
   printf '%s\n' "$key"
+}
+
+state_value() {
+  key=$1
+  sed -n "s/^$key=//p" "$workspace/state"
+}
+
+write_state() {
+  umask 077
+  cat >"$workspace/state" <<EOF
+workspace=$workspace
+project=$project
+image=$image
+port=$port
+container=$container
+provider_container=$provider_container
+started_at=$started_at
+api_key=$api_key
+management_key=$management_key
+EOF
 }
 
 render_config() {
@@ -41,20 +60,97 @@ require_docker() {
   fi
 }
 
-validate_compose() {
+compose() {
   CPA_E2E_WORKSPACE=$workspace \
-  CPA_E2E_PORT=$port \
+  CPA_E2E_LAB_DIR=$lab_dir \
+  CPA_E2E_PORT=0 \
   CPA_E2E_IMAGE=$image \
-  docker compose -f "$compose_file" --project-directory "$workspace" config >/dev/null
+  docker compose --project-name "$project" -f "$compose_file" --project-directory "$workspace" "$@"
+}
+
+validate_compose() {
+  compose config >/dev/null
 }
 
 build_plugin() {
+  cache_root=${CPA_E2E_CACHE_DIR:-"$temp_dir/cpa-model-combo-e2e-go-cache"}
+  umask 077
+  mkdir -p "$cache_root/gomod" "$cache_root/gocache"
   docker run --rm \
+    -e GOMODCACHE=/go/pkg/mod \
+    -e GOCACHE=/root/.cache/go-build \
     -v "$repo_dir:/src:ro" \
     -v "$workspace/plugins:/out" \
+    -v "$cache_root/gomod:/go/pkg/mod" \
+    -v "$cache_root/gocache:/root/.cache/go-build" \
     -w /src \
     "${CPA_E2E_GO_IMAGE:-docker.io/library/golang:1.26}" \
     sh -c 'CGO_ENABLED=1 GOOS=linux GOARCH=amd64 go build -buildvcs=false -trimpath -buildmode=c-shared -o /out/model-combo.so .'
+}
+
+wait_for_cpa() {
+  attempts=30
+  while ! curl --fail --silent --show-error --max-time 2 \
+    -H "Authorization: Bearer $api_key" \
+    "http://127.0.0.1:$port/v1/models" >/dev/null; do
+    attempts=$((attempts - 1))
+    if [ "$attempts" -eq 0 ]; then
+      printf '%s\n' 'CPA did not become ready' >&2
+      return 1
+    fi
+    sleep 1
+  done
+}
+require_owned_container() {
+  expected_service=$2
+  if ! labels=$(docker inspect -f '{{ index .Config.Labels "com.docker.compose.project" }} {{ index .Config.Labels "com.docker.compose.service" }} {{ index .Config.Labels "com.cpa-model-combo.e2e.lab" }}' "$1" 2>/dev/null); then
+    printf '%s\n' 'workspace state references a missing lab container' >&2
+    exit 2
+  fi
+  if [ "$labels" != "$project $expected_service true" ]; then
+    printf '%s\n' 'workspace state does not belong to stored lab project' >&2
+    exit 2
+  fi
+}
+
+
+require_workspace() {
+  workspace=$1
+  case "$workspace" in
+    "$temp_dir"/cpa-model-combo-e2e.*) ;;
+    *)
+      printf '%s\n' 'refusing to use workspace outside temporary lab path' >&2
+      exit 2
+      ;;
+  esac
+  if [ ! -f "$workspace/.cpa-model-combo-e2e-lab" ] || [ ! -f "$workspace/state" ]; then
+    printf '%s\n' 'command requires a workspace created by this lab' >&2
+    exit 2
+  fi
+  stored_workspace=$(state_value workspace)
+  project=$(state_value project)
+  image=$(state_value image)
+  port=$(state_value port)
+  container=$(state_value container)
+  provider_container=$(state_value provider_container)
+  started_at=$(state_value started_at)
+  api_key=$(state_value api_key)
+  management_key=$(state_value management_key)
+  if [ "$stored_workspace" != "$workspace" ] || [ -z "$project" ] || [ -z "$image" ] || [ -z "$port" ] || [ -z "$container" ] || [ -z "$provider_container" ] || [ -z "$started_at" ]; then
+    printf '%s\n' 'workspace state is incomplete' >&2
+    exit 2
+  fi
+  require_owned_container "$container" cpa
+  require_owned_container "$provider_container" fake-provider
+}
+
+cleanup_failed_start() {
+  status=$?
+  trap - 0 HUP INT TERM
+  if [ -n "${workspace:-}" ] && [ -f "$workspace/.cpa-model-combo-e2e-lab" ]; then
+    compose down --volumes --remove-orphans >/dev/null 2>&1 || true
+  fi
+  exit "$status"
 }
 
 start_lab() {
@@ -63,60 +159,98 @@ start_lab() {
     exit 2
   fi
   require_docker
-  workspace=$(mktemp -d "$temp_dir/cpa-model-combo-e2e.XXXXXX")
+
   umask 077
-  mkdir "$workspace/auth" "$workspace/plugins" "$workspace/logs" "$workspace/static"
-  : >"$workspace/.cpa-model-combo-e2e-lab"
-  port=${CPA_E2E_PORT:-18317}
+  workspace=$(mktemp -d "$temp_dir/cpa-model-combo-e2e.XXXXXX")
+  suffix=$(printf '%s' "${workspace##*.}" | tr '[:upper:]' '[:lower:]' | tr -cd 'a-z0-9')
+  [ -n "$suffix" ] || { printf '%s\n' 'could not derive Compose project suffix' >&2; exit 1; }
+  project="cpa-model-combo-e2e-$suffix"
   image=${CPA_E2E_IMAGE:-docker.io/eceasy/cli-proxy-api:v7.3.9}
+  port=0
+  container=
+  provider_container=
+  started_at=
   api_key=$(random_key)
   management_key=$(random_key)
-  project="cpa-model-combo-e2e-$(basename "$workspace" | tr '[:upper:]' '[:lower:]' | tr -cd '[:alnum:]')"
+  mkdir -p "$workspace/auth" "$workspace/plugins" "$workspace/logs" "$workspace/static"
+  : >"$workspace/.cpa-model-combo-e2e-lab"
+  trap cleanup_failed_start 0 HUP INT TERM
+
   render_config
   validate_compose
   build_plugin
-  CPA_E2E_WORKSPACE=$workspace \
-  CPA_E2E_PORT=$port \
-  CPA_E2E_IMAGE=$image \
-  docker compose -p "$project" -f "$compose_file" --project-directory "$workspace" up -d
-  cat <<EOF
-Workspace: $workspace
-Browser E2E:
-  DASHBOARD_URL=http://127.0.0.1:$port DASHBOARD_MANAGEMENT_KEY=$management_key DASHBOARD_E2E_ALLOW_MUTATIONS=1 npm run test:e2e
-Cleanup:
-  $lab_dir/lab.sh down $workspace
-EOF
+  compose up -d
+  container=$(compose ps -q cpa)
+  provider_container=$(compose ps -q fake-provider)
+  started_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+  write_state
+  mapped=$(compose port cpa 8317)
+  port=${mapped##*:}
+  case "$port" in
+    ''|*[!0-9]*)
+      printf '%s\n' "could not determine CPA loopback port: $mapped" >&2
+      exit 1
+      ;;
+  esac
+  write_state
+  wait_for_cpa
+  trap - 0 HUP INT TERM
+
+  printf 'CPA E2E workspace: %s\n' "$workspace"
+  printf 'CPA container: %s\n' "$container"
+  printf 'CPA listening on http://127.0.0.1:%s\n' "$port"
+  printf 'DASHBOARD_URL=http://127.0.0.1:%s DASHBOARD_MANAGEMENT_KEY=%s DASHBOARD_E2E_ALLOW_MUTATIONS=1 npm run test:e2e\n' "$port" "$management_key"
+  printf 'Cleanup: %s down %s\n' "$lab_dir/lab.sh" "$workspace"
+}
+
+status_lab() {
+  require_docker
+  require_workspace "$1"
+  compose ps
+  if curl --fail --silent --show-error --max-time 2 \
+    -H "Authorization: Bearer $api_key" \
+    "http://127.0.0.1:$port/v1/models" >/dev/null; then
+    reachability=ready
+  else
+    reachability=unreachable
+  fi
+  printf 'CPA E2E workspace: %s\n' "$workspace"
+  printf 'CPA project: %s\n' "$project"
+  printf 'CPA container: %s\n' "$container"
+  printf 'Fake provider container: %s\n' "$provider_container"
+  printf 'CPA reachability: %s\n' "$reachability"
+  printf 'CPA listening on http://127.0.0.1:%s\n' "$port"
+}
+
+logs_lab() {
+  require_docker
+  require_workspace "$1"
+  compose logs --no-color
 }
 
 stop_lab() {
-  workspace=${1:-}
-  if [ -z "$workspace" ] || [ ! -f "$workspace/.cpa-model-combo-e2e-lab" ]; then
-    printf '%s\n' 'down requires a workspace created by this lab' >&2
-    exit 2
-  fi
-  case "$workspace" in
-    "$temp_dir"/cpa-model-combo-e2e.*) ;;
-    *)
-      printf '%s\n' 'refusing to remove workspace outside temporary lab path' >&2
-      exit 2
-      ;;
-  esac
   require_docker
-  project=$(cat "$workspace/project-name")
-  CPA_E2E_WORKSPACE=$workspace \
-  CPA_E2E_PORT=${CPA_E2E_PORT:-18317} \
-  CPA_E2E_IMAGE=${CPA_E2E_IMAGE:-docker.io/eceasy/cli-proxy-api:v7.3.9} \
-  docker compose -p "$project" -f "$compose_file" --project-directory "$workspace" down --volumes --remove-orphans
+  require_workspace "$1"
+  compose down --volumes --remove-orphans
   rm -rf "$workspace"
 }
 
-case ${1:-} in
+case "${1:-}" in
   up)
+    [ "$#" -eq 1 ] || { usage >&2; exit 2; }
     start_lab
     ;;
+  status)
+    [ "$#" -eq 2 ] || { usage >&2; exit 2; }
+    status_lab "$2"
+    ;;
+  logs)
+    [ "$#" -eq 2 ] || { usage >&2; exit 2; }
+    logs_lab "$2"
+    ;;
   down)
-    shift
-    stop_lab "${1:-}"
+    [ "$#" -eq 2 ] || { usage >&2; exit 2; }
+    stop_lab "$2"
     ;;
   *)
     usage >&2

@@ -2,7 +2,15 @@ services:
   cpa:
     image: ${CPA_E2E_IMAGE:-docker.io/eceasy/cli-proxy-api:v7.3.9}
     ports:
-      - "127.0.0.1:${CPA_E2E_PORT}:8317"
+      - target: 8317
+        published: "${CPA_E2E_PORT:-0}"
+        host_ip: 127.0.0.1
+    depends_on:
+      fake-provider:
+        condition: service_healthy
+    networks: [lab]
+    labels:
+      com.cpa-model-combo.e2e.lab: "true"
     volumes:
       - type: bind
         source: ${CPA_E2E_WORKSPACE}/config.yaml
@@ -21,3 +29,24 @@ services:
         source: ${CPA_E2E_WORKSPACE}/static
         target: /CLIProxyAPI/static
     stop_grace_period: 30s
+
+  fake-provider:
+    image: docker.io/library/python:3.13-alpine
+    command: ["python", "/fixture/fake-provider.py"]
+    volumes:
+      - type: bind
+        source: ${CPA_E2E_LAB_DIR}/fake-provider.py
+        target: /fixture/fake-provider.py
+        read_only: true
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:19080/health')"]
+      interval: 1s
+      timeout: 2s
+      retries: 10
+    networks: [lab]
+    labels:
+      com.cpa-model-combo.e2e.lab: "true"
+
+networks:
+  lab:
+    internal: true
