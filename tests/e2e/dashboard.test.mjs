@@ -194,6 +194,40 @@ test('dashboard tabs retain their browser interactions after source assembly', {
     await page.locator('#reset-dialog[open]').waitFor({ state: 'detached' });
     await waitForUsageReady(page);
 
+    let requestCalls = 0;
+    const requestPage = {
+      schema_version: 1, generated_at: new Date().toISOString(), price_book_revision: 0, total: 2, offset: 0, limit: 50,
+      items: [
+        { sequence: 101, requested_at: '2026-01-01T00:00:00Z', router_request_id: 'tree-request', router_model: 'route-a', provider_model: 'provider-b', result: 'success', latency_ns: 3000000000, attempts: [
+          { requested_at: '2026-01-01T00:00:00Z', router_model: 'route-a', provider_model: 'provider-a', result: 'failed', latency_ns: 1000000000 },
+          { requested_at: '2026-01-01T00:00:01Z', router_model: 'route-a', provider_model: 'provider-b', result: 'success', latency_ns: 2000000000 },
+        ] },
+        { sequence: 102, requested_at: '2026-01-01T00:00:02Z', router_model: 'direct', provider_model: 'provider-c', result: 'success', latency_ns: 1000000000 },
+      ],
+    };
+    const requestRoute = async (route) => { requestCalls++; await route.fulfill({ contentType: 'application/json', body: JSON.stringify(requestPage) }); };
+    await page.route('**/usage/requests?**', requestRoute);
+    await page.locator('#request-page-size').selectOption('50');
+    await waitForUsageReady(page);
+    const toggle = page.getByRole('button', { name: 'Expand attempts for route-a' });
+    assert.equal(await page.locator('#usage-requests > tr').count(), 4);
+    assert.equal(await page.locator('.request-attempt-row[hidden]').count(), 2);
+    assert.equal(await page.locator('#request-page-status').textContent(), '1–2 of 2 requests');
+    assert.equal(await toggle.getAttribute('aria-expanded'), 'false');
+    const controls = (await toggle.getAttribute('aria-controls')).split(' ');
+    assert.deepEqual(controls, ['request-attempt-101-0', 'request-attempt-101-1']);
+    assert.deepEqual(await Promise.all(controls.map((id) => page.locator('#' + id).count())), [1, 1]);
+    await toggle.click();
+    assert.equal(await page.getByRole('button', { name: 'Collapse attempts for route-a' }).getAttribute('aria-expanded'), 'true');
+    assert.equal(await page.locator('.request-attempt-row[hidden]').count(), 0);
+    assert.deepEqual(await page.locator('.request-attempt-row td:nth-child(3)').allTextContents(), ['provider-a', 'provider-b']);
+    assert.equal(requestCalls, 1, 'tree toggle should not refetch requests');
+    await page.locator('#request-column-options input[data-column-key="time"]').uncheck();
+    assert.equal(await page.getByRole('button', { name: 'Collapse attempts for route-a' }).getAttribute('aria-expanded'), 'true');
+    await page.getByRole('button', { name: 'Collapse attempts for route-a' }).click();
+    assert.equal(await page.locator('.request-attempt-row[hidden]').count(), 2);
+    await page.unroute('**/usage/requests?**', requestRoute);
+
     await page.setViewportSize({ width: 1440, height: 900 });
     await page.getByRole('tab', { name: 'Configuration' }).click();
     assert.equal(await page.locator('#configuration-panel').isVisible(), true);

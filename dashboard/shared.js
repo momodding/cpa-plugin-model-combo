@@ -12,10 +12,10 @@ const CPA_STORAGE_SALT='cli-proxy-api-webui::secure-storage';
 const SESSION_KEY='cpa_model_combo_key';
 const REJECTED_KEY='cpa_model_combo_rejected_key';
 const REJECTED_AT='cpa_model_combo_rejected_at';
-const state={enabled:true,priority:'0',routes:[],availableModels:[],catalogLoaded:false,catalogError:'',baselineSnapshot:null,dirty:false,busy:false};
+	const state={enabled:true,priority:'0',routes:[],fallback:{enabled:true,fallback_on_status:'401, 402, 403, 404, 408, 429, 500, 502, 503, 504',no_fallback_on_status:'',retry_codes:'',no_retry_codes:'',max_attempts:'0',stream_fallback_before_payload:true},availableModels:[],catalogLoaded:false,catalogError:'',baselineSnapshot:null,dirty:false,busy:false};
 const usageState={
   active:false,initialized:false,preferencesLoaded:false,loading:false,generation:0,controller:null,timer:0,filterTimer:0,displayedRange:null,displayedFilterKey:'',pendingFullRefresh:false,preferenceTimer:0,preferenceSaveGeneration:0,preferenceSaveInFlight:false,preferenceSaveQueued:false,resizeTimer:0,
-  overview:null,groupPage:null,requestPage:null,range:'24h',granularity:'hour',customFrom:'',customTo:'',attribution:'',routerModel:'',providerModel:'',source:'',serviceTier:'',result:'',pricingDialogGeneration:0,pricingWriteInFlight:null,
+  overview:null,groupPage:null,requestPage:null,expandedRequests:new Set(),range:'24h',granularity:'hour',customFrom:'',customTo:'',attribution:'',routerModel:'',providerModel:'',source:'',serviceTier:'',result:'',pricingDialogGeneration:0,pricingWriteInFlight:null,
   group:{dimension:'provider_model',sort:'total_tokens',order:'desc',offset:0,limit:50},
   request:{sort:'time',order:'desc',offset:0,limit:50},
   hiddenRequestColumns:new Set(),hiddenGroupColumns:new Set(DEFAULT_HIDDEN_GROUP_COLUMNS),hiddenTokenSeries:new Set(),zoom:{tokens:1,cost:1,efficiency:1},priceBook:null,priceDraft:null,pricingSettingsDirty:false,priceCollectionDirty:false

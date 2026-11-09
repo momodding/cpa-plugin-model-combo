@@ -46,8 +46,9 @@ type resourceRoute struct {
 }
 
 type modelRouterValidationRequest struct {
-	Enabled *bool            `json:"enabled"`
-	Routes  []modelRouteYAML `json:"routes"`
+	Enabled  *bool               `json:"enabled"`
+	Routes   []modelRouteYAML    `json:"routes"`
+	Fallback *fallbackConfigYAML `json:"fallback"`
 }
 
 func modelRouterManagementRegistration() managementRegistrationResponse {
@@ -150,9 +151,10 @@ func validateModelRouterManagementConfig(body []byte) pluginapi.ManagementRespon
 		enabled = *request.Enabled
 	}
 	wire := struct {
-		Enabled bool             `yaml:"enabled"`
-		Routes  []modelRouteYAML `yaml:"routes"`
-	}{Enabled: enabled, Routes: request.Routes}
+		Enabled  bool                `yaml:"enabled"`
+		Routes   []modelRouteYAML    `yaml:"routes"`
+		Fallback *fallbackConfigYAML `yaml:"fallback,omitempty"`
+	}{Enabled: enabled, Routes: request.Routes, Fallback: request.Fallback}
 	raw, err := yaml.Marshal(wire)
 	if err != nil {
 		return modelRouterJSONResponse(http.StatusInternalServerError, map[string]any{

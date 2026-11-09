@@ -13,19 +13,19 @@ func TestAttributionTrackerRoutedDirectAndConflict(t *testing.T) {
 	tracker := newAttributionTracker(func() time.Time { return now })
 	headers := http.Header{"Authorization": {"Bearer sk-client-ab"}}
 
-	tracker.MarkRouted("auto", "openai/gpt-5.4(high)", headers)
+	tracker.MarkRouted("auto", "openai/gpt-5.4(high)", headers, "router-request", 7)
 	routed := tracker.Match(pluginapi.UsageRecord{Model: "openai/gpt-5.4", Alias: "gpt-5.4(high)", APIKey: "sk-client-ab", RequestedAt: now})
-	if routed.Kind != attributionRouted || routed.RouterModel != "auto" {
+	if routed.Kind != attributionRouted || routed.RouterModel != "auto" || routed.RouterRequestID != "router-request" || routed.Attempt != 7 {
 		t.Fatalf("routed attribution = %#v", routed)
 	}
 
 	tracker.MarkDirect(pluginapi.ModelRouteRequest{RequestedModel: "gpt-5.4", Headers: headers})
 	direct := tracker.Match(pluginapi.UsageRecord{Model: "gpt-5.4", APIKey: "sk-client-ab", RequestedAt: now})
-	if direct.Kind != attributionDirect || direct.RouterModel != "" {
+	if direct.Kind != attributionDirect || direct.RouterModel != "" || direct.RouterRequestID != "" || direct.Attempt != 0 {
 		t.Fatalf("direct attribution = %#v", direct)
 	}
 
-	tracker.MarkRouted("auto", "gpt-5.4", headers)
+	tracker.MarkRouted("auto", "gpt-5.4", headers, "conflict", 0)
 	tracker.MarkDirect(pluginapi.ModelRouteRequest{RequestedModel: "gpt-5.4", Headers: headers})
 	conflict := tracker.Match(pluginapi.UsageRecord{Model: "gpt-5.4", APIKey: "sk-client-ab", RequestedAt: now})
 	if conflict.Kind != attributionUnresolved {
@@ -36,12 +36,12 @@ func TestAttributionTrackerRoutedDirectAndConflict(t *testing.T) {
 func TestAttributionTrackerRequiresCredentialAndUnanimousRoute(t *testing.T) {
 	now := time.Date(2026, 8, 19, 12, 0, 0, 0, time.UTC)
 	tracker := newAttributionTracker(func() time.Time { return now })
-	tracker.MarkRouted("auto", "gpt-5.4", http.Header{"X-Api-Key": {"key-one"}})
+	tracker.MarkRouted("auto", "gpt-5.4", http.Header{"X-Api-Key": {"key-one"}}, "mismatch", 0)
 	if got := tracker.Match(pluginapi.UsageRecord{Model: "gpt-5.4", APIKey: "key-two", RequestedAt: now}); got.Kind != attributionUnresolved {
 		t.Fatalf("credential mismatch = %#v", got)
 	}
-	tracker.MarkRouted("auto", "gpt-5.4", nil)
-	tracker.MarkRouted("cheap", "gpt-5.4", nil)
+	tracker.MarkRouted("auto", "gpt-5.4", nil, "route-one", 0)
+	tracker.MarkRouted("cheap", "gpt-5.4", nil, "route-two", 0)
 	if got := tracker.Match(pluginapi.UsageRecord{Model: "gpt-5.4", RequestedAt: now}); got.Kind != attributionUnresolved {
 		t.Fatalf("route disagreement = %#v", got)
 	}
@@ -50,7 +50,7 @@ func TestAttributionTrackerRequiresCredentialAndUnanimousRoute(t *testing.T) {
 func TestAttributionTrackerMatchesTimestampLessUsageAfterWindow(t *testing.T) {
 	now := time.Date(2026, 8, 19, 12, 0, 0, 0, time.UTC)
 	tracker := newAttributionTracker(func() time.Time { return now })
-	tracker.MarkRouted("auto", "gpt-5.4", http.Header{"X-Api-Key": {"key-one"}})
+	tracker.MarkRouted("auto", "gpt-5.4", http.Header{"X-Api-Key": {"key-one"}}, "late", 0)
 	now = now.Add(attributionWindow + time.Second)
 	got := tracker.Match(pluginapi.UsageRecord{Model: "gpt-5.4", APIKey: "key-one"})
 	if got.Kind != attributionRouted || got.RouterModel != "auto" {
@@ -62,9 +62,9 @@ func TestAttributionTrackerLeavesAmbiguousTimestampLessUsageUnattributed(t *test
 	now := time.Date(2026, 8, 19, 12, 0, 0, 0, time.UTC)
 	tracker := newAttributionTracker(func() time.Time { return now })
 	headers := http.Header{"X-Api-Key": {"key-one"}}
-	tracker.MarkRouted("first", "gpt-5.4", headers)
+	tracker.MarkRouted("first", "gpt-5.4", headers, "first", 0)
 	now = now.Add(time.Second)
-	tracker.MarkRouted("second", "gpt-5.4", headers)
+	tracker.MarkRouted("second", "gpt-5.4", headers, "second", 0)
 	if got := tracker.Match(pluginapi.UsageRecord{Model: "gpt-5.4", APIKey: "key-one"}); got.Kind != attributionUnresolved {
 		t.Fatalf("ambiguous timestamp-less attribution = %#v", got)
 	}
@@ -76,9 +76,9 @@ func TestAttributionTrackerLeavesAmbiguousTimestampLessUsageUnattributed(t *test
 func TestAttributionTrackerExpiresAndCapsMarkers(t *testing.T) {
 	now := time.Date(2026, 8, 19, 12, 0, 0, 0, time.UTC)
 	tracker := newAttributionTracker(func() time.Time { return now })
-	tracker.MarkRouted("old", "model", nil)
+	tracker.MarkRouted("old", "model", nil, "old", 0)
 	now = now.Add(attributionRetention + time.Second)
-	tracker.MarkRouted("new", "model", nil)
+	tracker.MarkRouted("new", "model", nil, "new", 0)
 	if len(tracker.markers) != 1 || tracker.markers[0].routerModel != "new" {
 		t.Fatalf("expired markers = %#v", tracker.markers)
 	}

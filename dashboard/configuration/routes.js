@@ -86,19 +86,69 @@ function validateRoutes(routes){
   }));
   return errors;
 }
+function fallbackDraftFromConfig(value){
+  const fallback=value&&typeof value==='object'?value:{};
+  const list=items=>Array.isArray(items)?items.map(String).join(', '):'';
+  const integer=(number,fallbackValue)=>Number.isInteger(number)?String(number):fallbackValue;
+  return{
+    enabled:fallback.enabled!==false,
+    fallback_on_status:list(fallback.fallback_on_status),
+    no_fallback_on_status:list(fallback.no_fallback_on_status),
+    retry_codes:list(fallback.retry_codes),
+    no_retry_codes:list(fallback.no_retry_codes),
+    max_attempts:integer(fallback.max_attempts,'0'),
+		stream_fallback_before_payload:fallback.stream_fallback_before_payload===true
+  };
+}
 function configFromResponse(config){
   const source=Array.isArray(config.routes)?config.routes:(Array.isArray(config['model-routes'])?config['model-routes']:[]);
   return{
     enabled:config.enabled!==false,
     priority:Number.isInteger(config.priority)?String(config.priority):'0',
-    routes:source.map(normalizeRoute)
+    routes:source.map(normalizeRoute),
+    fallback:fallbackDraftFromConfig(config.fallback)
   };
+}
+function parseCodeList(raw){
+  return String(raw||'').split(',').map(value=>value.trim()).filter(Boolean);
+}
+function parseStatusList(raw){
+  return parseCodeList(raw).map(value=>/^\d+$/.test(value)?Number.parseInt(value,10):Number.NaN);
+}
+function fallbackFromState(fallback){
+  return{
+    enabled:fallback.enabled,
+    fallback_on_status:parseStatusList(fallback.fallback_on_status),
+    no_fallback_on_status:parseStatusList(fallback.no_fallback_on_status),
+    retry_codes:parseCodeList(fallback.retry_codes),
+    no_retry_codes:parseCodeList(fallback.no_retry_codes),
+    max_attempts:integerDraftValue(fallback.max_attempts),
+		stream_fallback_before_payload:true
+  };
+}
+function validateFallback(fallback){
+  const errors=[];
+  const statusInRange=value=>Number.isInteger(value)&&value>=100&&value<=599;
+  const onStatus=parseStatusList(fallback.fallback_on_status);
+  const noStatus=parseStatusList(fallback.no_fallback_on_status);
+  if(!onStatus.every(statusInRange)||!noStatus.every(statusInRange))errors.push('Fallback statuses must be integers from 100 to 599.');
+  const noStatusSet=new Set(noStatus);
+  if(onStatus.some(value=>noStatusSet.has(value)))errors.push('A fallback status cannot appear in both allow and deny lists.');
+  const retry=parseCodeList(fallback.retry_codes);
+  const noRetry=new Set(parseCodeList(fallback.no_retry_codes));
+  if(retry.some(code=>noRetry.has(code)))errors.push('A fallback error code cannot appear in both allow and deny lists.');
+  for(const key of['max_attempts']){
+    const value=integerDraftValue(fallback[key]);
+    if(!Number.isInteger(value)||value<0)errors.push('Fallback '+key.replace(/_/g,' ')+' must be a non-negative integer.');
+  }
+  return errors;
 }
 function configurationPatchBody(state){
   return{
     enabled:state.enabled,
     priority:integerDraftValue(state.priority),
     routes:serializeRoutes(state.routes),
+    fallback:fallbackFromState(state.fallback),
     'model-routes':null
   };
 }

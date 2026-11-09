@@ -25,7 +25,7 @@ routes:
     observation_window_minutes: 60
     fallback:
       fallback_on_status: [429, 500, 502, 503, 504]
-      stream_fallback_before_first_chunk_only: true
+		stream_fallback_before_payload: true
 ```
 
 `model-routes` remains accepted as a legacy alias for `routes`. Do not set both keys.

@@ -24,6 +24,8 @@ func storedRecordFromUsage(record pluginapi.UsageRecord, attribution attribution
 		RequestedAt:         requestedAt,
 		Attribution:         attribution.Kind,
 		RouterModel:         attribution.RouterModel,
+		RouterRequestID:     attribution.RouterRequestID,
+		RouterAttempt:       attribution.Attempt,
 		Provider:            strings.TrimSpace(record.Provider),
 		ExecutorType:        strings.TrimSpace(record.ExecutorType),
 		AccountingMode:      accountingMode,

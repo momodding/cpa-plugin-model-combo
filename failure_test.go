@@ -9,7 +9,7 @@ import (
 const missingProviderErrorBody = `{"error":{"message":"unknown provider for model provider-a","type":"invalid_request_error","code":"model_not_found","param":"model"}}`
 
 func TestEligibleRouteFailure(t *testing.T) {
-	policy := newFallbackPolicy(defaultFallbackOnStatus, nil)
+	policy := newFallbackPolicy(defaultFallbackOnStatus, nil, nil, nil)
 	tests := []struct {
 		name string
 		err  error
@@ -49,7 +49,7 @@ func TestEligibleRouteFailure(t *testing.T) {
 }
 
 func TestFallbackPolicyNoFallbackWins(t *testing.T) {
-	policy := newFallbackPolicy([]int{400, 429}, []int{429})
+	policy := newFallbackPolicy([]int{400, 429}, []int{429}, nil, nil)
 	if !policy.shouldFallback(400) {
 		t.Fatal("400 should fall back when listed in fallback_on_status")
 	}
@@ -65,7 +65,7 @@ func TestFallbackPolicyNoFallbackWins(t *testing.T) {
 }
 
 func TestEligibleRouteFailureUsesConfiguredStatuses(t *testing.T) {
-	policy := newFallbackPolicy([]int{400}, []int{429})
+	policy := newFallbackPolicy([]int{400}, []int{429}, nil, nil)
 	if !eligibleRouteFailure(statusError{status: 400, message: "invalid prompt"}, policy) {
 		t.Fatal("400 must fail over when fallback_on_status lists it")
 	}
@@ -75,7 +75,31 @@ func TestEligibleRouteFailureUsesConfiguredStatuses(t *testing.T) {
 	if eligibleRouteFailure(statusError{status: 404, message: "items are not persisted when store is false"}, policy) {
 		t.Fatal("a persisted response miss describes the request, so it must never fail over")
 	}
-	if eligibleRouteFailure(statusError{status: 400, message: missingProviderErrorBody}, newFallbackPolicy(defaultFallbackOnStatus, []int{400})) {
+	if eligibleRouteFailure(statusError{status: 400, message: missingProviderErrorBody}, newFallbackPolicy(defaultFallbackOnStatus, []int{400}, nil, nil)) {
 		t.Fatal("an explicit 400 exclusion must also exclude missing-provider errors")
+	}
+}
+
+func TestEligibleRouteFailureStructuredCodes(t *testing.T) {
+	policy := newFallbackPolicy(nil, nil, []string{"quota_exceeded", "invalid_prompt"}, []string{"invalid_prompt"})
+	tests := []struct {
+		name   string
+		status int
+		body   string
+		want   bool
+	}{
+		{name: "allowlisted code", status: 400, body: `{"error":{"code":"quota_exceeded","message":"quota"}}`, want: true},
+		{name: "allowlisted code with host prefix", status: 400, body: `model a returned status 400: {"error":{"code":"quota_exceeded"}}`, want: true},
+		{name: "denylist overrides allowlist", status: 400, body: `{"error":{"code":"invalid_prompt"}}`, want: false},
+		{name: "unlisted code", status: 400, body: `{"error":{"code":"other"}}`, want: false},
+		{name: "allowlisted code on 422", status: 422, body: `{"error":{"code":"quota_exceeded"}}`, want: false},
+		{name: "unstructured body", status: 400, body: "quota_exceeded", want: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := eligibleRouteFailure(statusError{status: tt.status, message: tt.body}, policy); got != tt.want {
+				t.Fatalf("eligibleRouteFailure() = %v, want %v", got, tt.want)
+			}
+		})
 	}
 }

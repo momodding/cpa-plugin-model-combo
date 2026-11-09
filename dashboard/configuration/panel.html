@@ -32,6 +32,54 @@
       </div>
       <section id="routes" class="routes" aria-live="polite"></section>
 
+      <section id="fallback-settings" class="fallback-settings" aria-labelledby="fallback-settings-title">
+        <div class="section-head">
+          <div class="section-title">
+            <h2 id="fallback-settings-title">Fallback Settings</h2>
+          </div>
+          <label class="toggle">
+            <input id="fallback-enabled" type="checkbox" data-fallback-field="enabled">
+            <span>Fallback enabled</span>
+          </label>
+        </div>
+        <div class="field-grid">
+          <div class="field">
+            <label for="fallback-on-status">Fallback on status</label>
+            <input id="fallback-on-status" type="text" data-fallback-field="fallback_on_status" inputmode="numeric" placeholder="401, 402, 403, 404, 408, 429, 500, 502, 503, 504">
+            <small>Comma-separated HTTP statuses, 100 to 599.</small>
+          </div>
+          <div class="field">
+            <label for="fallback-no-on-status">Never fall back on status</label>
+            <input id="fallback-no-on-status" type="text" data-fallback-field="no_fallback_on_status" inputmode="numeric">
+            <small>Comma-separated. A status cannot appear in both lists.</small>
+          </div>
+          <div class="field">
+            <label for="fallback-retry-codes">Retry error codes</label>
+            <input id="fallback-retry-codes" type="text" data-fallback-field="retry_codes">
+            <small>Comma-separated error codes that allow fallback.</small>
+          </div>
+          <div class="field">
+            <label for="fallback-no-retry-codes">Never retry error codes</label>
+            <input id="fallback-no-retry-codes" type="text" data-fallback-field="no_retry_codes">
+            <small>Comma-separated. A code cannot appear in both lists.</small>
+          </div>
+        </div>
+        <div class="field-grid">
+          <div class="field">
+            <label for="fallback-max-attempts">Max attempts</label>
+            <input id="fallback-max-attempts" type="number" data-fallback-field="max_attempts" min="0" step="1" inputmode="numeric">
+            <small>Zero means one attempt per route target.</small>
+          </div>
+          <div class="field">
+            <label class="toggle">
+		      <input id="fallback-stream-before-payload" type="checkbox" data-fallback-field="stream_fallback_before_payload" checked disabled>
+              <span>Stream fallback before first payload only</span>
+            </label>
+            <small>Required. A stream that already sent bytes cannot be spliced to another target.</small>
+          </div>
+        </div>
+      </section>
+
       <div id="configuration-actions" class="configuration-actions-dock" aria-hidden="true" hidden inert>
         <div id="configuration-actions-bar" class="footer-bar">
           <span class="footer-hint">Save checks duplicate aliases, recursion, target pools, and cooldowns with the plugin's Go parser.</span>

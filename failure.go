@@ -82,14 +82,18 @@ func codeFromError(err error, fallback string) string {
 // The status sets come from plugin configuration, so they can be changed without
 // rebuilding the library.
 type fallbackPolicy struct {
-	onStatus   map[int]struct{}
-	noFallback map[int]struct{}
+	onStatus     map[int]struct{}
+	noFallback   map[int]struct{}
+	retryCodes   map[string]struct{}
+	noRetryCodes map[string]struct{}
 }
 
-func newFallbackPolicy(fallbackOnStatus, noFallbackOnStatus []int) fallbackPolicy {
+func newFallbackPolicy(fallbackOnStatus, noFallbackOnStatus []int, retryCodes, noRetryCodes []string) fallbackPolicy {
 	policy := fallbackPolicy{
-		onStatus:   make(map[int]struct{}, len(fallbackOnStatus)),
-		noFallback: make(map[int]struct{}, len(noFallbackOnStatus)),
+		onStatus:     make(map[int]struct{}, len(fallbackOnStatus)),
+		noFallback:   make(map[int]struct{}, len(noFallbackOnStatus)),
+		retryCodes:   make(map[string]struct{}, len(retryCodes)),
+		noRetryCodes: make(map[string]struct{}, len(noRetryCodes)),
 	}
 	for _, status := range fallbackOnStatus {
 		policy.onStatus[status] = struct{}{}
@@ -97,7 +101,19 @@ func newFallbackPolicy(fallbackOnStatus, noFallbackOnStatus []int) fallbackPolic
 	for _, status := range noFallbackOnStatus {
 		policy.noFallback[status] = struct{}{}
 	}
+	for _, code := range retryCodes {
+		policy.retryCodes[policyErrorCode(code)] = struct{}{}
+	}
+	for _, code := range noRetryCodes {
+		policy.noRetryCodes[policyErrorCode(code)] = struct{}{}
+	}
 	return policy
+}
+
+// policyErrorCode normalizes configured and host-reported error codes so they
+// match case-insensitively. Model keys are not normalized here.
+func policyErrorCode(code string) string {
+	return strings.ToLower(strings.TrimSpace(code))
 }
 
 // shouldFallback reports whether a non-2xx status moves the request to the next
@@ -114,6 +130,20 @@ func (p fallbackPolicy) shouldFallback(status int) bool {
 	return status >= http.StatusInternalServerError
 }
 
+// retryableCode reports whether a 400 carrying this error code should fail over.
+// no_retry_codes takes precedence over retry_codes.
+func (p fallbackPolicy) retryableCode(code string) bool {
+	code = policyErrorCode(code)
+	if code == "" {
+		return false
+	}
+	if _, denied := p.noRetryCodes[code]; denied {
+		return false
+	}
+	_, listed := p.retryCodes[code]
+	return listed
+}
+
 func eligibleRouteFailure(err error, policy fallbackPolicy) bool {
 	if err == nil || terminalRequestError(err) {
 		return false
@@ -126,6 +156,9 @@ func eligibleRouteFailure(err error, policy fallbackPolicy) bool {
 			return false
 		}
 		if status == http.StatusBadRequest && missingProviderFailure(err.Error()) {
+			return true
+		}
+		if status == http.StatusBadRequest && policy.retryableCode(errorCodeFromMessage(err.Error())) {
 			return true
 		}
 		return policy.shouldFallback(status)
@@ -148,6 +181,23 @@ func missingProviderFailure(message string) bool {
 		return false
 	}
 	return strings.HasPrefix(body.Error.Message, "unknown provider for model ") || strings.HasPrefix(body.Error.Message, "no provider for model ")
+}
+
+// errorCodeFromMessage returns error.code from a JSON error body, or "" when the
+// message is unstructured. Host prefixes before the body are skipped.
+func errorCodeFromMessage(message string) string {
+	var body struct {
+		Error struct {
+			Code string `json:"code"`
+		} `json:"error"`
+	}
+	if start := strings.IndexByte(message, '{'); start >= 0 {
+		message = message[start:]
+	}
+	if json.Unmarshal([]byte(message), &body) != nil {
+		return ""
+	}
+	return body.Error.Code
 }
 
 // persistedResponseMiss reports the 404 that describes the request rather than

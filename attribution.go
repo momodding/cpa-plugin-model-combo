@@ -24,19 +24,23 @@ const (
 )
 
 type attributionResult struct {
-	Kind        string
-	RouterModel string
+	Kind            string
+	RouterModel     string
+	RouterRequestID string
+	Attempt         int
 }
 
 type attributionMarker struct {
-	id            uint64
-	requestID     string
-	direct        bool
-	routerModel   string
-	providerModel string
-	startedAt     time.Time
-	credential    [sha256.Size]byte
-	hasCredential bool
+	id              uint64
+	requestID       string
+	routerRequestID string
+	attempt         int
+	direct          bool
+	routerModel     string
+	providerModel   string
+	startedAt       time.Time
+	credential      [sha256.Size]byte
+	hasCredential   bool
 }
 
 type attributionTracker struct {
@@ -64,34 +68,36 @@ func (tracker *attributionTracker) MarkDirect(request pluginapi.ModelRouteReques
 	if tracker == nil {
 		return
 	}
-	tracker.add(true, "", request.RequestedModel, request.Headers, "")
+	tracker.add(true, "", request.RequestedModel, request.Headers, "", "", 0)
 }
 
-func (tracker *attributionTracker) MarkRouted(routerModel, providerModel string, headers http.Header) {
+func (tracker *attributionTracker) MarkRouted(routerModel, providerModel string, headers http.Header, routerRequestID string, attempt int) {
 	if tracker == nil {
 		return
 	}
-	tracker.add(false, routerModel, providerModel, headers, "")
+	tracker.add(false, routerModel, providerModel, headers, "", routerRequestID, attempt)
 }
 
 func (tracker *attributionTracker) MarkDirectRequest(request pluginapi.RequestInterceptRequest) {
 	if tracker == nil {
 		return
 	}
-	tracker.add(true, "", firstNonEmpty(request.Model, request.RequestedModel), request.Headers, request.RequestID)
+	tracker.add(true, "", firstNonEmpty(request.Model, request.RequestedModel), request.Headers, request.RequestID, "", 0)
 }
 
-func (tracker *attributionTracker) add(direct bool, routerModel, providerModel string, headers http.Header, requestID string) {
+func (tracker *attributionTracker) add(direct bool, routerModel, providerModel string, headers http.Header, requestID, routerRequestID string, attempt int) {
 	credential := clientCredential(headers)
 	fingerprint, hasCredential := tracker.fingerprint(credential)
 	marker := attributionMarker{
-		requestID:     strings.TrimSpace(requestID),
-		direct:        direct,
-		routerModel:   strings.TrimSpace(routerModel),
-		providerModel: strings.TrimSpace(providerModel),
-		startedAt:     tracker.now().UTC(),
-		credential:    fingerprint,
-		hasCredential: hasCredential,
+		requestID:       strings.TrimSpace(requestID),
+		routerRequestID: strings.TrimSpace(routerRequestID),
+		attempt:         attempt,
+		direct:          direct,
+		routerModel:     strings.TrimSpace(routerModel),
+		providerModel:   strings.TrimSpace(providerModel),
+		startedAt:       tracker.now().UTC(),
+		credential:      fingerprint,
+		hasCredential:   hasCredential,
 	}
 	tracker.mu.Lock()
 	tracker.pruneLocked(marker.startedAt)
@@ -144,7 +150,7 @@ func (tracker *attributionTracker) Match(record pluginapi.UsageRecord) attributi
 	if marker.direct {
 		return attributionResult{Kind: attributionDirect}
 	}
-	return attributionResult{Kind: attributionRouted, RouterModel: marker.routerModel}
+	return attributionResult{Kind: attributionRouted, RouterModel: marker.routerModel, RouterRequestID: marker.routerRequestID, Attempt: marker.attempt}
 }
 
 func (tracker *attributionTracker) equallyCloseIndexesLocked(indexes []int, requestedAt time.Time, closest int) []int {

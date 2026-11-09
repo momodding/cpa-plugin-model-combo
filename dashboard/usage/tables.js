@@ -105,21 +105,39 @@ function renderGroupTable(){
   document.getElementById('group-prev').disabled=usageState.group.offset<=0;
   document.getElementById('group-next').disabled=usageState.group.offset+usageState.group.limit>=total;
 }
+function requestAttemptIDs(item){return item.attempts.map((_,index)=>'request-attempt-'+item.sequence+'-'+index)}
+function requestRouterCell(row,item,attemptNumber,controls){
+  const cell=document.createElement('td');cell.className='text-cell';
+  if(attemptNumber){cell.classList.add('request-attempt-router');cell.textContent='Attempt '+attemptNumber}
+  else if(controls){
+    const expanded=usageState.expandedRequests.has(item.router_request_id),button=document.createElement('button');
+    button.type='button';button.className='request-attempt-toggle';button.dataset.requestToggle=item.router_request_id;
+    button.setAttribute('aria-expanded',String(expanded));button.setAttribute('aria-controls',controls.join(' '));button.setAttribute('aria-label',(expanded?'Collapse':'Expand')+' attempts for '+routerDisplay(item));button.setAttribute('title',button.getAttribute('aria-label'));button.textContent='›';
+    cell.appendChild(button);cell.appendChild(document.createTextNode(routerDisplay(item)));
+  }else cell.textContent=routerDisplay(item);
+  row.appendChild(cell);
+}
+function requestRow(row,item,columns,attemptNumber,controls){columns.forEach(column=>column.key==='router_model'?requestRouterCell(row,item,attemptNumber,controls):requestCell(row,item,column))}
 function renderRequestTable(){
   const page=usageState.requestPage;
   const columns=renderTableHeaders(requestColumns,usageState.hiddenRequestColumns,'request-headers','request-table','request',usageState.request.sort,usageState.request.order);
+  const requestIDs=new Set(page&&Array.isArray(page.items)?page.items.map(item=>item.router_request_id).filter(Boolean):[]);
+  usageState.expandedRequests.forEach(id=>{if(!requestIDs.has(id))usageState.expandedRequests.delete(id)});
   const fragment=document.createDocumentFragment();
   if(!page||!Array.isArray(page.items)||page.items.length===0){
     const row=document.createElement('tr'),cell=document.createElement('td');cell.colSpan=columns.length;cell.className='empty-row';cell.textContent='No requests match this range.';row.appendChild(cell);fragment.appendChild(row);
-  }else page.items.forEach(item=>{const row=document.createElement('tr');columns.forEach(column=>requestCell(row,item,column));fragment.appendChild(row)});
-  replaceTableRows(document.getElementById('usage-requests'),document.getElementById('request-table-scroll'),fragment);
+  }else page.items.forEach(item=>{
+    const attempts=Array.isArray(item.attempts)?item.attempts:[],controls=item.router_request_id&&attempts.length?requestAttemptIDs(item):null;
+    const row=document.createElement('tr');requestRow(row,item,columns,0,controls);fragment.appendChild(row);
+    if(controls)attempts.forEach((attempt,index)=>{const child=document.createElement('tr');child.id=controls[index];child.className='request-attempt-row';child.hidden=!usageState.expandedRequests.has(item.router_request_id);requestRow(child,attempt,columns,index+1);fragment.appendChild(child)});
+  });
   const total=Number(page&&page.total||0),start=total?usageState.request.offset+1:0,end=Math.min(usageState.request.offset+Number(page&&page.items&&page.items.length||0),total);
   document.getElementById('request-page-status').textContent=start+'–'+end+' of '+formatNumber(total)+' requests';
   document.getElementById('request-prev').disabled=usageState.request.offset<=0;
   document.getElementById('request-next').disabled=usageState.request.offset+usageState.request.limit>=total;
+  replaceTableRows(document.getElementById('usage-requests'),document.getElementById('request-table-scroll'),fragment);
 }
 function renderUsageDashboard(){
-  renderUsageSummary();
   renderUsageFilterOptions();
   renderGroupTable();
   renderRequestTable();
@@ -156,4 +174,8 @@ function initializeUsageTableEvents() {
   document.getElementById('request-headers').addEventListener('click',sortUsageTable);
   document.getElementById('group-column-options').addEventListener('change',changeColumnVisibility);
   document.getElementById('request-column-options').addEventListener('change',changeColumnVisibility);
+  document.getElementById('usage-requests').addEventListener('click',event=>{
+    const button=event.target.closest('[data-request-toggle]');if(!button)return;
+    const id=button.dataset.requestToggle;if(usageState.expandedRequests.has(id))usageState.expandedRequests.delete(id);else usageState.expandedRequests.add(id);renderRequestTable();
+  });
 }

@@ -77,6 +77,7 @@ func TestExecuteWithHostAvailabilityFailures(t *testing.T) {
 	for _, status := range []int{400, 401, 402, 429} {
 		t.Run(http.StatusText(status), func(t *testing.T) {
 			plugin := testRouterPlugin(testModelRoute("smart", routeStrategyPriority, 30, "provider-a", "provider-b"))
+			plugin.attribution = newAttributionTracker(nil)
 			host := &fakeModelHost{execute: func(request pluginapi.HostModelExecutionRequest) (pluginapi.HostModelExecutionResponse, error) {
 				if request.Model == "provider-a" {
 					return pluginapi.HostModelExecutionResponse{StatusCode: status, Body: []byte(missingProviderErrorBody)}, nil
@@ -91,6 +92,10 @@ func TestExecuteWithHostAvailabilityFailures(t *testing.T) {
 			}
 			if len(host.executeCalls) != 3 || host.executeCalls[0].Model != "provider-a" || host.executeCalls[1].Model != "provider-b" || host.executeCalls[2].Model != "provider-b" {
 				t.Fatalf("calls = %#v, want first target, fallback, then cooled-target skip", host.executeCalls)
+			}
+			markers := plugin.attribution.markers
+			if len(markers) != 3 || markers[0].routerRequestID == "" || markers[0].routerRequestID != markers[1].routerRequestID || markers[0].attempt != 0 || markers[1].attempt != 1 || markers[2].attempt != 0 || markers[2].routerRequestID == markers[0].routerRequestID {
+				t.Fatalf("router markers = %#v", markers)
 			}
 		})
 	}

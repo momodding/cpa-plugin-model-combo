@@ -252,7 +252,6 @@ func TestDecodeRouterConfigFallback(t *testing.T) {
 fallback:
   fallback_on_status: [400, 429]
   no_fallback_on_status: []
-  stream_fallback_before_first_chunk_only: true
 routes:
   - alias: demo
     targets:
@@ -294,12 +293,12 @@ routes:
       - model: target-a
 `,
 		"stream splice": `
-fallback:
-  stream_fallback_before_first_chunk_only: false
-routes:
-  - alias: demo
-    targets:
-      - model: target-a
+	fallback:
+	  stream_fallback_before_payload: false
+	routes:
+	  - alias: demo
+	    targets:
+	      - model: target-a
 `,
 		"unknown key": `
 fallback:
@@ -443,5 +442,66 @@ func TestDecodeRouterConfigRejectsNestedLastKnownGoodPolicy(t *testing.T) {
 `
 	if _, err := decodeRouterConfig([]byte(raw)); err == nil {
 		t.Fatal("decodeRouterConfig() accepted nested last_known_good policy")
+	}
+}
+
+func TestRouterConfigAttemptLimit(t *testing.T) {
+	tests := []struct {
+		name string
+		cfg  routerConfig
+		want int
+	}{
+		{name: "default uses all targets", cfg: routerConfig{}, want: 3},
+		{name: "disabled caps to one", cfg: routerConfig{FallbackDisabled: true}, want: 1},
+		{name: "max below targets", cfg: routerConfig{MaxAttempts: 2}, want: 2},
+		{name: "max above targets", cfg: routerConfig{MaxAttempts: 5}, want: 3},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := tt.cfg.attemptLimit(3); got != tt.want {
+				t.Fatalf("attemptLimit() = %d, want %d", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestDecodeRouterConfigFallbackDisabledAndAttempts(t *testing.T) {
+	cfg, err := decodeRouterConfig([]byte(`
+fallback:
+  enabled: false
+  max_attempts: 2
+routes:
+  - alias: demo
+    models: [target-a, target-b, target-c]
+`))
+	if err != nil {
+		t.Fatalf("decodeRouterConfig() error = %v", err)
+	}
+	if !cfg.FallbackDisabled || cfg.MaxAttempts != 2 {
+		t.Fatalf("fallback fields = disabled %v, max %d", cfg.FallbackDisabled, cfg.MaxAttempts)
+	}
+	if got := cfg.attemptLimit(3); got != 1 {
+		t.Fatalf("disabled attemptLimit() = %d, want 1", got)
+	}
+}
+
+func TestFallbackPolicyNormalizesErrorCodes(t *testing.T) {
+	cfg, err := decodeRouterConfig([]byte(`
+fallback:
+  retry_codes: ["  Model_Overloaded "]
+  no_retry_codes: [Blocked_Model]
+routes:
+  - alias: demo
+    models: [target-a]
+`))
+	if err != nil {
+		t.Fatalf("decodeRouterConfig() error = %v", err)
+	}
+	policy := cfg.fallbackPolicy()
+	if !policy.retryableCode("MODEL_overloaded") {
+		t.Fatal("retry code must match case-insensitively")
+	}
+	if policy.retryableCode("blocked_model") {
+		t.Fatal("no_retry_codes must take precedence and match case-insensitively")
 	}
 }

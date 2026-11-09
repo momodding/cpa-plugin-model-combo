@@ -2,6 +2,7 @@ function configurationSnapshot(){
   return JSON.stringify({
     enabled:Boolean(state.enabled),
     priority:canonicalIntegerDraft(state.priority),
+		fallback:Object.fromEntries(Object.entries(state.fallback).map(([key,value])=>[key,key==='enabled'||key==='stream_fallback_before_payload'?Boolean(value):String(value).trim()])),
     routes:state.routes.map(route=>({
       alias:String(route.alias===undefined||route.alias===null?'':route.alias).trim(),
       strategy:String(route.strategy===undefined||route.strategy===null?'':route.strategy),
@@ -150,6 +151,11 @@ async function loadConfiguration(){
     state.enabled=loaded.enabled;
     state.priority=loaded.priority;
     state.routes=loaded.routes;
+    state.fallback=loaded.fallback;
+    for(const[key,value]of Object.entries(state.fallback)){
+      const el=document.querySelector(`[data-fallback-field="${key}"]`);
+      if(el){if(el.type==='checkbox')el.checked=value;else el.value=value}
+    }
     if(catalogResult.status==='fulfilled'){
       try{
         state.availableModels=normalizeModelCatalog(catalogResult.value,state.routes);
@@ -390,7 +396,7 @@ function serializeRoutesFromState(){return serializeRoutes(state.routes)}
 function validateClient(routes){
   const errors=validateRoutes(routes);
   if(!/^-?\d+$/.test(state.priority.trim()))errors.push('Priority must be an integer.');
-  return errors;
+  return errors.concat(validateFallback(state.fallback));
 }
 async function saveConfiguration(){
   if(state.busy||!state.dirty)return;
@@ -421,4 +427,5 @@ function initializeConfigurationEvents() {
   addRouteEl.addEventListener('click',addRoute);
   reloadEl.addEventListener('click',()=>{if(!state.dirty||window.confirm('Discard unsaved changes and reload from CPA?'))loadConfiguration()});
   saveEl.addEventListener('click',saveConfiguration);
+  document.querySelectorAll('[data-fallback-field]').forEach(el=>el.addEventListener(el.type==='checkbox'?'change':'input',()=>{state.fallback[el.dataset.fallbackField]=el.type==='checkbox'?el.checked:el.value;refreshDirty()}));
 }

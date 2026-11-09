@@ -16,6 +16,7 @@ func TestExecuteStreamAvailabilityFailures(t *testing.T) {
 	for _, status := range []int{400, 401, 402, 429} {
 		t.Run(http.StatusText(status), func(t *testing.T) {
 			plugin := testRouterPlugin(testModelRoute("smart", routeStrategyPriority, 30, "provider-a", "provider-b"))
+			plugin.attribution = newAttributionTracker(nil)
 			host := &fakeModelHost{reads: make(map[string][]pluginapi.HostModelStreamReadResponse)}
 			host.start = func(request pluginapi.HostModelExecutionRequest) (pluginapi.HostModelStreamResponse, error) {
 				if request.Model == "provider-a" {
@@ -34,6 +35,10 @@ func TestExecuteStreamAvailabilityFailures(t *testing.T) {
 			}
 			if len(host.emitted) != 2 || !strings.Contains(string(host.emitted[0]), `"model":"smart"`) {
 				t.Fatalf("emitted = %q", host.emitted)
+			}
+			markers := plugin.attribution.markers
+			if len(markers) != 3 || markers[0].routerRequestID == "" || markers[0].routerRequestID != markers[1].routerRequestID || markers[0].attempt != 0 || markers[1].attempt != 1 || markers[2].attempt != 0 || markers[2].routerRequestID == markers[0].routerRequestID {
+				t.Fatalf("router markers = %#v", markers)
 			}
 		})
 	}

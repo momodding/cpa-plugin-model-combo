@@ -32,6 +32,8 @@ func TestAssembleModelRouterDashboardEmbedsEveryAssetOnce(t *testing.T) {
 		"function initializeUsageChartEvents()",
 		"function initializePricingEvents()",
 		"function restoreRouteFocus(descriptor)",
+		"group:{dimension:'provider_model',sort:'total_tokens',order:'desc',offset:0,limit:50}",
+		"request:{sort:'time',order:'desc',offset:0,limit:50}",
 	} {
 		if !strings.Contains(html, marker) {
 			t.Errorf("assembled dashboard is missing %q", marker)

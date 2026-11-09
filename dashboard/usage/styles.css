@@ -92,6 +92,11 @@ button.model-legend-entry[aria-pressed="true"] { color: var(--blue); border-colo
 .pagination { display: flex; justify-content: flex-end; gap: 8px; align-items: center; margin-top: 10px; color: var(--muted); font-size: 11px; }
 .pagination button { padding: 6px 9px; }
 .empty-row { padding: 30px 15px !important; color: var(--muted); text-align: center !important; }
+.request-attempt-toggle { width: 1.25em; margin: 0 5px 0 -2px; padding: 0; color: var(--muted); font: inherit; font-size: 16px; line-height: 1; background: transparent; border: 0; cursor: pointer; transition: transform .16s ease; }
+.request-attempt-toggle[aria-expanded="true"] { transform: rotate(90deg); }
+.request-attempt-toggle:focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; border-radius: 2px; }
+.request-attempt-row { color: var(--muted); background: var(--surface-soft); }
+.request-attempt-router { padding-left: 30px !important; }
 .column-picker { position: relative; }
 .column-picker summary { list-style: none; padding: 7px 10px; color: var(--ink); font-weight: 700; background: var(--paper); border: 1px solid var(--line-strong); border-radius: 7px; cursor: pointer; }
 .column-picker summary::-webkit-details-marker { display: none; }

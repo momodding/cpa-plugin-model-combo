@@ -79,7 +79,11 @@ type routerConfig struct {
 	RetentionDays      int
 	Routes             []modelRoute
 	FallbackOnStatus   []int
+	FallbackDisabled   bool
 	NoFallbackOnStatus []int
+	RetryCodes         []string
+	NoRetryCodes       []string
+	MaxAttempts        int
 }
 
 // fallbackPolicy resolves the configured status lists into lookup sets. An
@@ -90,13 +94,29 @@ func (c routerConfig) fallbackPolicy() fallbackPolicy {
 	if len(onStatus) == 0 {
 		onStatus = defaultFallbackOnStatus
 	}
-	return newFallbackPolicy(onStatus, c.NoFallbackOnStatus)
+	return newFallbackPolicy(onStatus, c.NoFallbackOnStatus, c.RetryCodes, c.NoRetryCodes)
+}
+
+// attemptLimit caps how many targets one request may try. Disabled fallback
+// allows one attempt; a positive max_attempts lowers the cap further.
+func (c routerConfig) attemptLimit(targets int) int {
+	if c.FallbackDisabled {
+		return min(targets, 1)
+	}
+	if c.MaxAttempts > 0 {
+		return min(targets, c.MaxAttempts)
+	}
+	return targets
 }
 
 type fallbackConfigYAML struct {
-	FallbackOnStatus                   *[]int `yaml:"fallback_on_status,omitempty"`
-	NoFallbackOnStatus                 *[]int `yaml:"no_fallback_on_status,omitempty"`
-	StreamFallbackBeforeFirstChunkOnly *bool  `yaml:"stream_fallback_before_first_chunk_only,omitempty"`
+	Enabled                     *bool     `yaml:"enabled,omitempty" json:"enabled"`
+	FallbackOnStatus            *[]int    `yaml:"fallback_on_status,omitempty" json:"fallback_on_status"`
+	NoFallbackOnStatus          *[]int    `yaml:"no_fallback_on_status,omitempty" json:"no_fallback_on_status"`
+	RetryCodes                  *[]string `yaml:"retry_codes,omitempty" json:"retry_codes"`
+	NoRetryCodes                *[]string `yaml:"no_retry_codes,omitempty" json:"no_retry_codes"`
+	MaxAttempts                 *int      `yaml:"max_attempts,omitempty" json:"max_attempts"`
+	StreamFallbackBeforePayload *bool     `yaml:"stream_fallback_before_payload,omitempty" json:"stream_fallback_before_payload"`
 }
 
 const unsupportedAccountAwareSchemaError = "model-combo config does not support legacy account-aware schema fields account_pools or combos; migrate to routes with model targets"
@@ -239,17 +259,44 @@ func decodeRouterConfig(raw []byte) (routerConfig, error) {
 			}
 		}
 	}
-	var fallbackOnStatus []int
-	var noFallbackOnStatus []int
+	var fallbackOnStatus, noFallbackOnStatus []int
+	retryCodes := []string{"model_not_supported", "model_not_found", "model_unavailable", "resource_not_found"}
+	var noRetryCodes []string
+	maxAttempts := 0
+	fallbackDisabled := false
 	if wire.Fallback != nil {
-		if wire.Fallback.StreamFallbackBeforeFirstChunkOnly != nil && !*wire.Fallback.StreamFallbackBeforeFirstChunkOnly {
-			return routerConfig{}, errors.New("fallback.stream_fallback_before_first_chunk_only must be true: a stream that already emitted a payload cannot be spliced onto another target")
+		fb := wire.Fallback
+		if fb.Enabled != nil {
+			fallbackDisabled = !*fb.Enabled
 		}
-		if wire.Fallback.FallbackOnStatus != nil {
-			fallbackOnStatus = append([]int(nil), (*wire.Fallback.FallbackOnStatus)...)
+		if fb.StreamFallbackBeforePayload != nil && !*fb.StreamFallbackBeforePayload {
+			return routerConfig{}, errors.New("fallback.stream_fallback_before_payload must be true: a stream that already emitted a payload cannot be spliced onto another target")
 		}
-		if wire.Fallback.NoFallbackOnStatus != nil {
-			noFallbackOnStatus = append([]int(nil), (*wire.Fallback.NoFallbackOnStatus)...)
+		if fb.FallbackOnStatus != nil {
+			fallbackOnStatus = append([]int(nil), (*fb.FallbackOnStatus)...)
+		}
+		if fb.NoFallbackOnStatus != nil {
+			noFallbackOnStatus = append([]int(nil), (*fb.NoFallbackOnStatus)...)
+		}
+		if fb.RetryCodes != nil {
+			codes, err := normalizeErrorCodes("fallback.retry_codes", *fb.RetryCodes)
+			if err != nil {
+				return routerConfig{}, err
+			}
+			retryCodes = codes
+		}
+		if fb.NoRetryCodes != nil {
+			codes, err := normalizeErrorCodes("fallback.no_retry_codes", *fb.NoRetryCodes)
+			if err != nil {
+				return routerConfig{}, err
+			}
+			noRetryCodes = codes
+		}
+		if fb.MaxAttempts != nil {
+			if *fb.MaxAttempts < 0 {
+				return routerConfig{}, errors.New("fallback.max_attempts must be >= 0")
+			}
+			maxAttempts = *fb.MaxAttempts
 		}
 	}
 	// Only the lists the configuration supplies are validated. The default set is
@@ -267,7 +314,11 @@ func decodeRouterConfig(raw []byte) (routerConfig, error) {
 		RetentionDays:      retentionDays,
 		Routes:             routes,
 		FallbackOnStatus:   fallbackOnStatus,
+		FallbackDisabled:   fallbackDisabled,
 		NoFallbackOnStatus: noFallbackOnStatus,
+		RetryCodes:         retryCodes,
+		NoRetryCodes:       noRetryCodes,
+		MaxAttempts:        maxAttempts,
 	}, nil
 }
 
@@ -325,6 +376,27 @@ func validateRoute(route modelRoute, index int, aliases map[string]int) error {
 		seen[key] = targetIndex
 	}
 	return nil
+}
+
+// normalizeErrorCodes trims and dedupes error codes, rejecting anything that
+// is not a plain identifier so codes can never carry bodies or credentials.
+func normalizeErrorCodes(field string, codes []string) ([]string, error) {
+	seen := make(map[string]bool, len(codes))
+	out := make([]string, 0, len(codes))
+	for _, code := range codes {
+		code = strings.ToLower(strings.TrimSpace(code))
+		if code == "" || seen[code] {
+			continue
+		}
+		for _, r := range code {
+			if !(r == '_' || r == '-' || r == '.' || (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9')) {
+				return nil, fmt.Errorf("%s contains invalid error code %q", field, code)
+			}
+		}
+		seen[code] = true
+		out = append(out, code)
+	}
+	return out, nil
 }
 
 func normalizeModelList(models []string) []string {

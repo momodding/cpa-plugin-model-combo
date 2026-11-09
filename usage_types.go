@@ -37,6 +37,8 @@ type storedUsageRecord struct {
 	RequestedAt         time.Time `json:"requested_at"`
 	Attribution         string    `json:"attribution"`
 	RouterModel         string    `json:"router_model,omitempty"`
+	RouterRequestID     string    `json:"router_request_id,omitempty"`
+	RouterAttempt       int       `json:"router_attempt"`
 	Provider            string    `json:"provider,omitempty"`
 	ExecutorType        string    `json:"executor_type,omitempty"`
 	AccountingMode      string    `json:"accounting_mode,omitempty"`
@@ -73,12 +75,14 @@ func (record storedUsageRecord) result() string {
 
 type usageRequestDetail struct {
 	storedUsageRecord
-	Result                   string         `json:"result"`
-	GenerationNS             uint64         `json:"generation_ns"`
-	TPS                      float64        `json:"tps"`
-	EffectiveCacheReadTokens uint64         `json:"effective_cache_read_tokens"`
-	CacheHit                 bool           `json:"cache_hit"`
-	EstimatedCost            *estimatedCost `json:"estimated_cost,omitempty"`
+	Result                   string               `json:"result"`
+	GenerationNS             uint64               `json:"generation_ns"`
+	TPS                      float64              `json:"tps"`
+	EffectiveCacheReadTokens uint64               `json:"effective_cache_read_tokens"`
+	CacheHit                 bool                 `json:"cache_hit"`
+	EstimatedCost            *estimatedCost       `json:"estimated_cost,omitempty"`
+	Attempts                 []usageRequestDetail `json:"attempts,omitempty"`
+	AttemptCount             int                  `json:"attempt_count,omitempty"`
 }
 
 func requestDetail(record storedUsageRecord, resolver modelPriceResolver) usageRequestDetail {

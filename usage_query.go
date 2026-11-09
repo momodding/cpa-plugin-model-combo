@@ -2,9 +2,7 @@ package main
 
 import (
 	"container/heap"
-	"context"
 	"database/sql"
-	"encoding/json"
 	"fmt"
 	"sort"
 	"strings"
@@ -70,22 +68,12 @@ func (store *usageStore) queryUsage(filter usageFilter, granularity string, grou
 		if groups != nil {
 			grouped = &usageGroupsAccumulator{dimension: groups.Dimension, groups: make(map[usageGroupKey]*groupAccumulator)}
 		}
-		indexed := requests != nil && requests.Sort == "time" && !filter.hasDimensions()
-		withCosts := overview != nil || grouped != nil || requests != nil && requests.Sort == "cost"
+		withCosts := overview != nil || grouped != nil || requests != nil
 		var selection *usageRequestSelection
-		if requests != nil && !indexed {
-			selection = newUsageRequestSelection(*requests, withCosts)
-			if requests.Offset > 0 {
-				total, err := countUsageRecords(connection, filter)
-				if err != nil {
-					return err
-				}
-				if requests.Offset >= total {
-					selection.capacity = 0
-				}
-			}
+		if requests != nil {
+			selection = newUsageRequestSelection(*requests, filter, withCosts)
 		}
-		if overview != nil || grouped != nil || selection != nil {
+		if overview != nil || grouped != nil {
 			err := scanUsageRecords(connection, filter, func(record storedUsageRecord) {
 				var cost estimatedCost
 				if withCosts {
@@ -97,9 +85,14 @@ func (store *usageStore) queryUsage(filter usageFilter, granularity string, grou
 				if grouped != nil {
 					grouped.add(record, cost)
 				}
-				if selection != nil {
-					selection.add(record, cost)
-				}
+			})
+			if err != nil {
+				return err
+			}
+		}
+		if selection != nil {
+			err := scanUsageRecords(connection, usageFilter{}, func(record storedUsageRecord) {
+				selection.add(record, estimateUsageCost(record, resolver))
 			})
 			if err != nil {
 				return err
@@ -111,17 +104,7 @@ func (store *usageStore) queryUsage(filter usageFilter, granularity string, grou
 		if grouped != nil {
 			result.Groups = grouped.finish(*groups, now)
 		}
-		if indexed {
-			total, err := countUsageRecords(connection, filter)
-			if err != nil {
-				return err
-			}
-			items, err := indexedUsageRequestPage(connection, filter, *requests, resolver)
-			if err != nil {
-				return err
-			}
-			result.Requests = usageRequestPage{SchemaVersion: usageSchemaVersion, GeneratedAt: now, PriceBookRevision: book.Revision, Total: total, Offset: requests.Offset, Limit: requests.Limit, Items: items}
-		} else if selection != nil {
+		if selection != nil {
 			result.Requests = selection.finish(resolver, book.Revision, now)
 		}
 		return nil
@@ -135,39 +118,6 @@ func (store *usageStore) queryUsage(filter usageFilter, granularity string, grou
 
 func (filter usageFilter) hasDimensions() bool {
 	return filter.Attribution != "" || filter.RouterModel != "" || filter.ProviderModel != "" || filter.Source != "" || filter.ServiceTier != "" || filter.Result != ""
-}
-
-func countUsageRecords(connection *sql.Conn, filter usageFilter) (int, error) {
-	where, args := usageTimeWhere(filter)
-	var count int
-	err := connection.QueryRowContext(context.Background(), `SELECT COUNT(*) FROM requests`+where, args...).Scan(&count)
-	return count, err
-}
-
-func indexedUsageRequestPage(connection *sql.Conn, filter usageFilter, options usagePageOptions, resolver modelPriceResolver) ([]usageRequestDetail, error) {
-	where, args := usageTimeWhere(filter)
-	order := " DESC"
-	if options.Order == "asc" {
-		order = " ASC"
-	}
-	rows, err := connection.QueryContext(context.Background(), `SELECT payload FROM requests`+where+` ORDER BY requested_at_ns`+order+`, sequence`+order+` LIMIT ? OFFSET ?`, append(args, options.Limit, options.Offset)...)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	items := make([]usageRequestDetail, 0)
-	var value sql.RawBytes
-	for rows.Next() {
-		if err := rows.Scan(&value); err != nil {
-			return nil, err
-		}
-		var record storedUsageRecord
-		if err := json.Unmarshal(value, &record); err != nil {
-			return nil, fmt.Errorf("decode usage record: %w", err)
-		}
-		items = append(items, requestDetail(record, resolver))
-	}
-	return items, rows.Err()
 }
 
 type usageOverviewAccumulator struct {
@@ -460,23 +410,30 @@ func paginateGroups(items []usageGroup, offset, limit int) []usageGroup {
 
 type usageRequestCandidate struct {
 	storedUsageRecord
-	cost      estimatedCost
-	sortValue float64
+	cost         estimatedCost
+	sortValue    float64
+	tps          float64
+	generationNS uint64
+	attempts     []usageRequestCandidate
+	aggregate    bool
 }
 
 type usageRequestSelection struct {
 	options         usagePageOptions
+	filter          usageFilter
 	items           []usageRequestCandidate
+	standalone      []usageRequestCandidate
+	grouped         map[string][]usageRequestCandidate
 	total, capacity int
 	withCosts       bool
 }
 
-func newUsageRequestSelection(options usagePageOptions, withCosts bool) *usageRequestSelection {
+func newUsageRequestSelection(options usagePageOptions, filter usageFilter, withCosts bool) *usageRequestSelection {
 	capacity := int(^uint(0) >> 1)
 	if options.Offset <= capacity-options.Limit {
 		capacity = options.Offset + options.Limit
 	}
-	return &usageRequestSelection{options: options, capacity: capacity, withCosts: withCosts}
+	return &usageRequestSelection{options: options, filter: filter, capacity: capacity, grouped: make(map[string][]usageRequestCandidate), withCosts: withCosts}
 }
 
 func (selection *usageRequestSelection) better(left, right usageRequestCandidate) bool {
@@ -509,22 +466,27 @@ func (selection *usageRequestSelection) Pop() any {
 }
 
 func (selection *usageRequestSelection) add(record storedUsageRecord, cost estimatedCost) {
-	selection.total++
-	if selection.capacity == 0 {
-		return
+	generation := record.LatencyNS
+	if record.TTFTNS > 0 && record.LatencyNS >= record.TTFTNS {
+		generation -= record.TTFTNS
 	}
-	candidate := usageRequestCandidate{storedUsageRecord: record, cost: cost}
+	candidate := usageRequestCandidate{storedUsageRecord: record, cost: cost, generationNS: generation}
+	if generation > 0 {
+		candidate.tps = float64(record.OutputTokens) / (float64(generation) / float64(time.Second))
+	}
 	if selection.options.Sort == "cost" {
 		candidate.sortValue = cost.TotalUSD
 	}
-	if selection.options.Sort == "tps" {
-		generation := record.LatencyNS
-		if record.TTFTNS > 0 && record.LatencyNS >= record.TTFTNS {
-			generation -= record.TTFTNS
-		}
-		if generation > 0 {
-			candidate.sortValue = float64(record.OutputTokens) / (float64(generation) / float64(time.Second))
-		}
+	if record.Attribution == attributionRouted && record.RouterRequestID != "" {
+		selection.grouped[record.RouterRequestID] = append(selection.grouped[record.RouterRequestID], candidate)
+		return
+	}
+	selection.standalone = append(selection.standalone, candidate)
+}
+
+func (selection *usageRequestSelection) selectCandidate(candidate usageRequestCandidate) {
+	if selection.capacity == 0 {
+		return
 	}
 	if len(selection.items) < selection.capacity {
 		selection.items = append(selection.items, candidate)
@@ -536,22 +498,141 @@ func (selection *usageRequestSelection) add(record storedUsageRecord, cost estim
 		heap.Fix(selection, 0)
 	}
 }
-
 func (selection *usageRequestSelection) finish(resolver modelPriceResolver, revision uint64, now time.Time) usageRequestPage {
+
+	selection.items = nil
+	selection.total = 0
+	for _, candidate := range selection.standalone {
+		selection.addLogical(candidate)
+	}
+	for _, attempts := range selection.grouped {
+		sort.SliceStable(attempts, func(i, j int) bool {
+			if attempts[i].RouterAttempt != attempts[j].RouterAttempt {
+				return attempts[i].RouterAttempt < attempts[j].RouterAttempt
+			}
+			return attempts[i].Sequence < attempts[j].Sequence
+		})
+		parent := aggregateRequestAttempts(attempts)
+		parent.attempts = attempts
+		selection.addLogical(parent)
+	}
 	options := selection.options
 	items := make([]usageRequestDetail, 0)
 	if options.Offset < len(selection.items) {
 		sort.Slice(selection.items, func(i, j int) bool { return selection.better(selection.items[i], selection.items[j]) })
 		end := options.Offset + min(options.Limit, len(selection.items)-options.Offset)
 		for _, candidate := range selection.items[options.Offset:end] {
+			var detail usageRequestDetail
 			if selection.withCosts {
-				items = append(items, requestDetailWithCost(candidate.storedUsageRecord, candidate.cost))
+				detail = requestDetailWithCost(candidate.storedUsageRecord, candidate.cost)
 			} else {
-				items = append(items, requestDetail(candidate.storedUsageRecord, resolver))
+				detail = requestDetail(candidate.storedUsageRecord, resolver)
 			}
+			if candidate.aggregate {
+				detail.GenerationNS = candidate.generationNS
+				detail.TPS = candidate.tps
+				detail.EffectiveCacheReadTokens = candidate.CacheReadTokens
+				detail.CacheHit = candidate.CacheReadTokens > 0
+			}
+			if len(candidate.attempts) > 0 {
+				detail.Attempts = make([]usageRequestDetail, 0, len(candidate.attempts))
+				for _, attempt := range candidate.attempts {
+					if selection.withCosts {
+						detail.Attempts = append(detail.Attempts, requestDetailWithCost(attempt.storedUsageRecord, attempt.cost))
+					} else {
+						detail.Attempts = append(detail.Attempts, requestDetail(attempt.storedUsageRecord, resolver))
+					}
+				}
+				detail.AttemptCount = len(detail.Attempts)
+			}
+			items = append(items, detail)
 		}
 	}
 	return usageRequestPage{SchemaVersion: usageSchemaVersion, GeneratedAt: now, PriceBookRevision: revision, Total: selection.total, Offset: options.Offset, Limit: options.Limit, Items: items}
+}
+
+func (selection *usageRequestSelection) addLogical(candidate usageRequestCandidate) {
+	if !selection.matchesLogical(candidate) {
+		return
+	}
+	selection.total++
+	selection.selectCandidate(candidate)
+}
+
+func (selection *usageRequestSelection) matchesLogical(candidate usageRequestCandidate) bool {
+	filter := selection.filter
+	if (!filter.From.IsZero() && candidate.RequestedAt.Before(filter.From)) || (!filter.To.IsZero() && !candidate.RequestedAt.Before(filter.To)) || (filter.Attribution != "" && !equalFold(candidate.Attribution, filter.Attribution)) || (filter.RouterModel != "" && !equalFold(candidate.RouterModel, filter.RouterModel)) || (filter.Result != "" && !equalFold(candidate.result(), filter.Result)) {
+		return false
+	}
+	if filter.ProviderModel == "" && filter.Source == "" && filter.ServiceTier == "" {
+		return true
+	}
+	attempts := candidate.attempts
+	if len(attempts) == 0 {
+		attempts = []usageRequestCandidate{candidate}
+	}
+	for _, attempt := range attempts {
+		if (filter.ProviderModel == "" || equalFold(attempt.ProviderModel, filter.ProviderModel)) && (filter.Source == "" || equalFold(attempt.Source, filter.Source)) && (filter.ServiceTier == "" || equalFold(attempt.ServiceTier, filter.ServiceTier)) {
+			return true
+		}
+	}
+	return false
+}
+
+func aggregateRequestAttempts(attempts []usageRequestCandidate) usageRequestCandidate {
+	parent := attempts[len(attempts)-1]
+	parent.aggregate = true
+	parent.Source = ""
+	parent.AccountingMode = ""
+	parent.InputTokens = 0
+	parent.OutputTokens = 0
+	parent.ReasoningTokens = 0
+	parent.CachedTokens = 0
+	parent.CacheReadTokens = 0
+	parent.CacheCreationTokens = 0
+	parent.TotalTokens = 0
+	parent.LatencyNS = 0
+	parent.TTFTNS = 0
+	parent.generationNS = 0
+	parent.cost = estimatedCost{Priced: true}
+	parent.RequestedAt, parent.Sequence = attempts[0].RequestedAt, attempts[0].Sequence
+	for _, attempt := range attempts {
+		if attempt.RequestedAt.Before(parent.RequestedAt) {
+			parent.RequestedAt = attempt.RequestedAt
+		}
+		if attempt.Sequence < parent.Sequence {
+			parent.Sequence = attempt.Sequence
+		}
+		parent.InputTokens += attempt.InputTokens
+		parent.OutputTokens += attempt.OutputTokens
+		parent.ReasoningTokens += attempt.ReasoningTokens
+		parent.CachedTokens += attempt.CachedTokens
+		parent.CacheReadTokens += effectiveCacheReadTokens(attempt.storedUsageRecord)
+		parent.CacheCreationTokens += attempt.CacheCreationTokens
+		parent.TotalTokens += attempt.TotalTokens
+		parent.LatencyNS += attempt.LatencyNS
+		parent.generationNS += attempt.generationNS
+		parent.cost.Priced = parent.cost.Priced && attempt.cost.Priced
+		parent.cost.ContextTokens += attempt.cost.ContextTokens
+		parent.cost.BillableInputTokens += attempt.cost.BillableInputTokens
+		parent.cost.BilledCacheReadTokens += attempt.cost.BilledCacheReadTokens
+		parent.cost.InputUSD += attempt.cost.InputUSD
+		parent.cost.OutputUSD += attempt.cost.OutputUSD
+		parent.cost.CacheReadUSD += attempt.cost.CacheReadUSD
+		parent.cost.CacheCreationUSD += attempt.cost.CacheCreationUSD
+		parent.cost.TotalUSD += attempt.cost.TotalUSD
+	}
+	last := attempts[len(attempts)-1]
+	if last.TTFTNS > 0 {
+		parent.TTFTNS = last.TTFTNS
+		for _, attempt := range attempts[:len(attempts)-1] {
+			parent.TTFTNS += attempt.LatencyNS
+		}
+	}
+	if parent.generationNS > 0 {
+		parent.tps = float64(parent.OutputTokens) / (float64(parent.generationNS) / float64(time.Second))
+	}
+	return parent
 }
 
 func compareRequests(left, right usageRequestCandidate, field string) int {
@@ -571,7 +652,7 @@ func compareRequests(left, right usageRequestCandidate, field string) int {
 	case "ttft":
 		return compareUint64(left.TTFTNS, right.TTFTNS)
 	case "tps":
-		return compareFloat(left.sortValue, right.sortValue)
+		return compareFloat(left.tps, right.tps)
 	case "total_tokens":
 		return compareUint64(left.TotalTokens, right.TotalTokens)
 	case "cost":

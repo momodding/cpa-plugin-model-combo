@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
 	"fmt"
 	"net/http"
 	"strings"
@@ -55,10 +56,12 @@ func (p *modelRouterPlugin) executeStreamWithHost(_ context.Context, request plu
 	}
 	requestedModel := strings.TrimSpace(request.Model)
 	bodyInfo := bodyForExecution(request)
+	routerRequestID := rand.Text()
 	policy := p.config.fallbackPolicy()
 	var lastErr error
 	attempted := make(map[string]struct{}, len(route.Targets))
-	for attempt := 0; attempt < len(route.Targets); attempt++ {
+	limit := p.config.attemptLimit(len(route.Targets))
+	for attempt := 0; attempt < limit; attempt++ {
 		selection := p.runtime.SelectExcluding(route, attempted)
 		if selection.allCooling {
 			return cooldownRouteError(route, selection.retryAfter)
@@ -68,7 +71,7 @@ func (p *modelRouterPlugin) executeStreamWithHost(_ context.Context, request plu
 		}
 		attempted[routeKey(selection.model)] = struct{}{}
 		target := targetModel(requestedModel, selection.model)
-		p.attribution.MarkRouted(route.Alias, target, request.Headers)
+		p.attribution.MarkRouted(route.Alias, target, request.Headers, routerRequestID, attempt)
 		receivedPayload, err := forwardStreamAttempt(request, bodyInfo, target, requestedModel, pluginStreamID, host, onPayload)
 		if err == nil {
 			p.runtime.MarkSuccess(route, selection.model)
@@ -77,7 +80,7 @@ func (p *modelRouterPlugin) executeStreamWithHost(_ context.Context, request plu
 		if eligibleRouteFailure(err, policy) {
 			p.runtime.MarkFailure(route, selection.model)
 		}
-		if receivedPayload || !eligibleRouteFailure(err, policy) {
+		if receivedPayload || !eligibleRouteFailure(err, policy) || p.config.FallbackDisabled {
 			return err
 		}
 		lastErr = err

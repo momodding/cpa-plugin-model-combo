@@ -110,6 +110,8 @@ func TestModelRouterManagementDashboardReusesCPAMCSessionAndTheme(t *testing.T) 
 		"#configuration-panel { padding-bottom: var(--configuration-actions-clearance); }",
 		"bottom: calc(20px + var(--configuration-actions-clearance));",
 		"baselineSnapshot:null",
+		"group:{dimension:'provider_model',sort:'total_tokens',order:'desc',offset:0,limit:50}",
+		"applyUsagePreferences({})",
 		"function configurationSnapshot()",
 		"return /^-?\\d+$/.test(trimmed)?{value:Number.parseInt(trimmed,10)}:{draft:raw}",
 		"function refreshDirty()",

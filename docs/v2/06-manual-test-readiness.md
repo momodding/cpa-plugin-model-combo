@@ -103,7 +103,7 @@ plugins:
       fallback:
         fallback_on_status: [401, 402, 403, 404, 408, 429, 500, 502, 503, 504]
         no_fallback_on_status: []
-        stream_fallback_before_first_chunk_only: true
+		stream_fallback_before_payload: true
       routes:
         - alias: route-priority
           strategy: priority

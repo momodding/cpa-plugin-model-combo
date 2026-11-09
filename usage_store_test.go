@@ -197,7 +197,7 @@ func TestUsageStorePersistsAndResetPreservesSettings(t *testing.T) {
 	}
 	now := time.Now().UTC().Add(-time.Minute)
 	plugin := &modelRouterPlugin{config: routerConfig{Enabled: true}, store: store, attribution: newAttributionTracker(func() time.Time { return now })}
-	plugin.attribution.MarkRouted("auto", "gpt-5.4", mapHeader("Authorization", "Bearer raw-client-secret"))
+	plugin.attribution.MarkRouted("auto", "gpt-5.4", mapHeader("Authorization", "Bearer raw-client-secret"), "persist", 0)
 	plugin.HandleUsage(t.Context(), pluginapi.UsageRecord{
 		Provider: "openai", ExecutorType: "openai", Model: "gpt-5.4", APIKey: "raw-client-secret", AuthType: "api-key", Source: "raw-provider-secret", RequestedAt: now,
 		Latency: 2 * time.Second, TTFT: 500 * time.Millisecond, Detail: pluginapi.UsageDetail{InputTokens: 100, OutputTokens: 20, CacheReadTokens: 10, TotalTokens: 120},
@@ -235,7 +235,7 @@ func TestUsageStorePersistsAndResetPreservesSettings(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = store.Close() })
 	page, err := store.Requests(usageFilter{From: now.Add(-time.Hour), To: now.Add(time.Hour)}, "time", "desc", 0, 100)
-	if err != nil || page.Total != 1 || page.Items[0].RouterModel != "auto" || page.Items[0].ProviderModel != "gpt-5.4" || page.Items[0].Source != "openai" {
+	if err != nil || page.Total != 1 || page.Items[0].RouterModel != "auto" || page.Items[0].ProviderModel != "gpt-5.4" || page.Items[0].Source != "" || len(page.Items[0].Attempts) != 1 || page.Items[0].Attempts[0].Source != "openai" {
 		t.Fatalf("persisted requests = %#v, %v", page, err)
 	}
 	if loaded, err := store.QueryPriceBook(); err != nil || loaded.Revision != 1 || len(loaded.Prices) != 1 {
@@ -351,7 +351,7 @@ func TestHandleUsagePersistsAuthoritativeCPARecord(t *testing.T) {
 		store:       store,
 		attribution: newAttributionTracker(func() time.Time { return now }),
 	}
-	plugin.attribution.MarkRouted("smart", "provider/model", mapHeader("Authorization", "Bearer client-secret"))
+	plugin.attribution.MarkRouted("smart", "provider/model", mapHeader("Authorization", "Bearer client-secret"), "authoritative", 0)
 	plugin.HandleUsage(t.Context(), pluginapi.UsageRecord{
 		Provider: "openai-compatibility", ExecutorType: "OpenAICompatExecutor", Model: "provider/model", APIKey: "client-secret", RequestedAt: now,
 		Detail: pluginapi.UsageDetail{InputTokens: 10, OutputTokens: 1, CachedTokens: 4, CacheCreationTokens: 4, TotalTokens: 11}, Generate: true,
@@ -374,8 +374,8 @@ func TestHandleUsageStoresAmbiguousRecordAsUnattributed(t *testing.T) {
 	defer store.Close()
 	now := time.Now().UTC()
 	tracker := newAttributionTracker(func() time.Time { return now })
-	tracker.MarkRouted("first", "provider/model", mapHeader("X-Api-Key", "client-secret"))
-	tracker.MarkRouted("second", "provider/model", mapHeader("X-Api-Key", "client-secret"))
+	tracker.MarkRouted("first", "provider/model", mapHeader("X-Api-Key", "client-secret"), "first", 0)
+	tracker.MarkRouted("second", "provider/model", mapHeader("X-Api-Key", "client-secret"), "second", 0)
 	plugin := &modelRouterPlugin{config: routerConfig{Enabled: true}, store: store, attribution: tracker}
 	plugin.HandleUsage(t.Context(), pluginapi.UsageRecord{
 		Provider: "provider", Model: "provider/model", APIKey: "client-secret", Detail: pluginapi.UsageDetail{TotalTokens: 9}, Generate: true,
@@ -977,8 +977,8 @@ func TestUsageSnapshotAllowsConcurrentWriterAndKeepsPricesAndRows(t *testing.T) 
 		if err != nil {
 			return err
 		}
-		count, err := countUsageRecords(connection, filter)
-		if err != nil {
+		count := 0
+		if err := scanUsageRecords(connection, filter, func(storedUsageRecord) { count++ }); err != nil {
 			return err
 		}
 		if _, err := writer.SavePriceBook(saveModelPricesRequest{Revision: before.Revision, Prices: map[string]modelPrice{"model-a": {tokenRates: tokenRates{Input: 100}}}}, time.Now().UTC()); err != nil {
@@ -991,12 +991,12 @@ func TestUsageSnapshotAllowsConcurrentWriterAndKeepsPricesAndRows(t *testing.T) 
 		if err != nil {
 			return err
 		}
-		rows, err := indexedUsageRequestPage(connection, filter, usagePageOptions{"time", "desc", 0, 500}, newModelPriceResolver(after.Prices, after.SyncSettings))
-		if err != nil {
+		rows := 0
+		if err := scanUsageRecords(connection, filter, func(storedUsageRecord) { rows++ }); err != nil {
 			return err
 		}
-		if after.Revision != before.Revision || len(rows) != count || count != 72 {
-			return fmt.Errorf("snapshot changed during concurrent writes: prices %d/%d, rows %d/%d", before.Revision, after.Revision, len(rows), count)
+		if after.Revision != before.Revision || rows != count || count != 72 {
+			return fmt.Errorf("snapshot changed during concurrent writes: prices %d/%d, rows %d/%d", before.Revision, after.Revision, rows, count)
 		}
 		return nil
 	})
@@ -1551,4 +1551,55 @@ func (store *usageStore) referenceUsageRecords(filter usageFilter) ([]storedUsag
 		return nil, err
 	}
 	return records, nil
+}
+
+func TestAggregateRequestAttempts(t *testing.T) {
+	now := time.Date(2026, 11, 6, 12, 0, 0, 0, time.UTC)
+	attempts := []usageRequestCandidate{
+		{storedUsageRecord: storedUsageRecord{Sequence: 9, RequestedAt: now, Attribution: attributionRouted, RouterModel: "router", ProviderModel: "first", Source: "first-source", AccountingMode: "first-mode", Failed: true, LatencyNS: uint64(time.Second), TTFTNS: uint64(100 * time.Millisecond), InputTokens: 2, OutputTokens: 3, CacheReadTokens: 4, TotalTokens: 5}, cost: estimatedCost{Priced: true, InputUSD: 1, TotalUSD: 2}, generationNS: uint64(900 * time.Millisecond)},
+		{storedUsageRecord: storedUsageRecord{Sequence: 12, RequestedAt: now.Add(time.Second), Attribution: attributionRouted, RouterModel: "router", ProviderModel: "last", Source: "last-source", AccountingMode: "last-mode", LatencyNS: uint64(2 * time.Second), TTFTNS: uint64(200 * time.Millisecond), InputTokens: 7, OutputTokens: 11, CacheReadTokens: 13, TotalTokens: 17}, cost: estimatedCost{Priced: true, OutputUSD: 3, TotalUSD: 4}, generationNS: uint64(1800 * time.Millisecond)},
+	}
+	got := aggregateRequestAttempts(attempts)
+	if got.Sequence != 9 || !got.RequestedAt.Equal(now) || got.ProviderModel != "last" || got.Failed || got.Source != "" || got.AccountingMode != "" {
+		t.Fatalf("representative = %#v", got)
+	}
+	if got.InputTokens != 9 || got.OutputTokens != 14 || got.CacheReadTokens != 17 || got.TotalTokens != 22 || got.LatencyNS != uint64(3*time.Second) || got.TTFTNS != uint64(1200*time.Millisecond) || got.generationNS != uint64(2700*time.Millisecond) {
+		t.Fatalf("aggregate metrics = %#v", got)
+	}
+	if !got.cost.Priced || got.cost.TotalUSD != 6 || got.cost.InputUSD != 1 || got.cost.OutputUSD != 3 || got.cost.Source != "" || got.cost.AccountingMode != "" || got.cost.PriceServiceTier != "" {
+		t.Fatalf("aggregate cost = %#v", got.cost)
+	}
+}
+
+func TestUsageRequestsGroupsCorrelatedRouterAttempts(t *testing.T) {
+	store, err := openUsageStore(filepath.Join(t.TempDir(), "usage.db"), 365)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	now := time.Date(2026, 11, 6, 12, 0, 0, 0, time.UTC)
+	for _, record := range []storedUsageRecord{
+		{RequestedAt: now, Attribution: attributionRouted, RouterModel: "smart", RouterRequestID: "request-1", RouterAttempt: 0, ProviderModel: "first", Source: "fallback", Failed: true, StatusCode: 429, InputTokens: 2, OutputTokens: 3, TotalTokens: 5, LatencyNS: uint64(time.Second)},
+		{RequestedAt: now.Add(time.Second), Attribution: attributionRouted, RouterModel: "smart", RouterRequestID: "request-1", RouterAttempt: 1, ProviderModel: "second", Source: "winner", StatusCode: 200, InputTokens: 7, OutputTokens: 11, TotalTokens: 18, LatencyNS: uint64(2 * time.Second)},
+		{RequestedAt: now.Add(2 * time.Second), Attribution: attributionRouted, RouterModel: "smart", ProviderModel: "legacy", Source: "legacy", StatusCode: 200, TotalTokens: 1},
+	} {
+		if err := store.Record(record); err != nil {
+			t.Fatal(err)
+		}
+	}
+	page, err := store.Requests(usageFilter{}, "time", "asc", 0, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if page.Total != 2 || len(page.Items) != 2 || page.Items[0].ProviderModel != "second" || page.Items[0].Source != "" || page.Items[0].TotalTokens != 23 || len(page.Items[0].Attempts) != 2 || page.Items[0].Attempts[0].ProviderModel != "first" || page.Items[0].Attempts[1].ProviderModel != "second" || page.Items[1].ProviderModel != "legacy" || len(page.Items[1].Attempts) != 0 {
+		t.Fatalf("logical page = %#v", page)
+	}
+	filtered, err := store.Requests(usageFilter{ProviderModel: "first", Source: "fallback"}, "time", "asc", 0, 10)
+	if err != nil || filtered.Total != 1 || len(filtered.Items) != 1 || filtered.Items[0].RouterRequestID != "request-1" || len(filtered.Items[0].Attempts) != 2 {
+		t.Fatalf("attempt filter = %#v, %v", filtered, err)
+	}
+	paged, err := store.Requests(usageFilter{}, "time", "asc", 1, 1)
+	if err != nil || paged.Total != 2 || len(paged.Items) != 1 || paged.Items[0].ProviderModel != "legacy" {
+		t.Fatalf("logical pagination = %#v, %v", paged, err)
+	}
 }
