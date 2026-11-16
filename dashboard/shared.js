@@ -14,13 +14,14 @@ const REJECTED_AT='cpa_model_router_rejected_at';
 const state={enabled:true,priority:'0',routes:[],availableModels:[],catalogLoaded:false,catalogError:'',baselineSnapshot:null,dirty:false,busy:false};
 const usageState={
   active:false,initialized:false,preferencesLoaded:false,loading:false,generation:0,controller:null,timer:0,filterTimer:0,displayedRange:null,displayedFilterKey:'',pendingFullRefresh:false,preferenceTimer:0,preferenceSaveGeneration:0,preferenceSaveInFlight:false,preferenceSaveQueued:false,resizeTimer:0,
-  overview:null,groupPage:null,requestPage:null,range:'24h',granularity:'hour',customFrom:'',customTo:'',attribution:'',routerModel:'',providerModel:'',source:'',serviceTier:'',result:'',pricingDialogGeneration:0,pricingWriteInFlight:null,
+  overview:null,groupPage:null,requestPage:null,expandedRequests:new Set(),range:'24h',granularity:'hour',customFrom:'',customTo:'',attribution:'',routerModel:'',providerModel:'',source:'',serviceTier:'',result:'',pricingDialogGeneration:0,pricingWriteInFlight:null,
   group:{dimension:'provider_model',sort:'total_tokens',order:'desc',offset:0,limit:50},
   request:{sort:'time',order:'desc',offset:0,limit:50},
   hiddenRequestColumns:new Set(),hiddenGroupColumns:new Set(DEFAULT_HIDDEN_GROUP_COLUMNS),hiddenTokenSeries:new Set(),zoom:{tokens:1,cost:1,efficiency:1},priceBook:null,priceDraft:null,pricingSettingsDirty:false,priceCollectionDirty:false
 };
 const requestColumns=[
   {key:'time',label:'Time',sort:'time',text:true},{key:'router_model',label:'Router model',sort:'router_model',text:true},{key:'provider_model',label:'Provider model',sort:'provider_model',text:true},
+  {key:'trace_id',label:'Trace',text:true},{key:'request_endpoint',label:'Endpoint',text:true},{key:'requested_model',label:'Requested model',text:true},{key:'credential',label:'Credential',text:true},
   {key:'provider',label:'Provider',text:true},{key:'source',label:'Source',sort:'source',text:true},{key:'service_tier',label:'Service tier',sort:'service_tier',text:true},
   {key:'result',label:'Result',sort:'result',text:true},{key:'latency',label:'Latency',sort:'latency'},{key:'ttft',label:'TTFT',sort:'ttft'},{key:'tps',label:'Tokens/sec',sort:'tps'},
   {key:'input_tokens',label:'Input'},{key:'output_tokens',label:'Output'},{key:'reasoning_tokens',label:'Reasoning'},{key:'cache_read_tokens',label:'Cache read'},

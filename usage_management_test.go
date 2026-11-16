@@ -49,10 +49,14 @@ func TestUsageManagementOverviewRequestsPricesPreferencesAndReset(t *testing.T) 
 
 	preferences := defaultDashboardPreferences()
 	preferences.RequestPageSize = 25
+	preferences.HiddenRequestColumns = []string{"trace_id", "request_endpoint", "requested_model", "credential"}
 	preferencesBody, _ := json.Marshal(preferences)
 	savedPreferences := handleModelRouterManagement(plugin, pluginapi.ManagementRequest{Method: http.MethodPut, Path: modelRouterUsageBasePath + "/preferences", Body: preferencesBody})
 	if savedPreferences.StatusCode != http.StatusOK || !strings.Contains(string(savedPreferences.Body), `"request_page_size":25`) {
 		t.Fatalf("preferences = status %d body %s", savedPreferences.StatusCode, savedPreferences.Body)
+	}
+	if !strings.Contains(string(savedPreferences.Body), `"request_endpoint"`) || !strings.Contains(string(savedPreferences.Body), `"credential"`) {
+		t.Fatalf("hierarchy columns not saved: %s", savedPreferences.Body)
 	}
 	reset := handleModelRouterManagement(plugin, pluginapi.ManagementRequest{Method: http.MethodPost, Path: modelRouterUsageBasePath + "/reset", Body: []byte(`{"confirm":"reset"}`)})
 	if reset.StatusCode != http.StatusOK {

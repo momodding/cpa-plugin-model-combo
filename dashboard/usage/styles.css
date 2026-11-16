@@ -89,6 +89,15 @@ button.model-legend-entry[aria-pressed="true"] { color: var(--blue); border-colo
 .status-pill { display: inline-block; padding: 3px 7px; font-size: 10px; font-weight: 750; border-radius: 99px; background: var(--surface-soft); }
 .status-pill.success { color: var(--teal); background: var(--teal-soft); }
 .status-pill.failure { color: var(--danger); background: var(--danger-soft); }
+.request-attempt-toggle { width: 1.25em; margin: 0 5px 0 -2px; padding: 0; color: var(--muted); font: inherit; font-size: 16px; line-height: 1; background: transparent; border: 0; cursor: pointer; transition: transform .16s ease; }
+.request-attempt-toggle[aria-expanded="true"] { transform: rotate(90deg); }
+.request-attempt-toggle:focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; border-radius: 2px; }
+span.request-attempt-toggle { display: inline-block; cursor: default; }
+.request-parent-row td:first-child { font-weight: 700; }
+.request-attempt-row { color: var(--muted); background: var(--surface-soft); box-shadow: inset 3px 0 0 var(--line-strong); }
+.request-ordinal, .request-count { color: var(--muted); font-size: 10px; font-weight: 650; }
+.request-ordinal { margin-right: 6px; padding-left: 14px; }
+.request-warning { margin-top: 4px; padding: 3px 6px; color: var(--danger); font-size: 10px; font-weight: 650; white-space: normal; background: var(--danger-soft); border-radius: 5px; }
 .pagination { display: flex; justify-content: flex-end; gap: 8px; align-items: center; margin-top: 10px; color: var(--muted); font-size: 11px; }
 .pagination button { padding: 6px 9px; }
 .empty-row { padding: 30px 15px !important; color: var(--muted); text-align: center !important; }
