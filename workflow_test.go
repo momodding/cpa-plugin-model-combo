@@ -413,7 +413,7 @@ func TestWorkflowPinsMinimumCPAIntegration(t *testing.T) {
 	workflow := string(raw)
 	for _, required := range []string{
 		"repository: router-for-me/CLIProxyAPI",
-		"ref: 61fdfc341b96178a8dcb53f2efc46cbc341d267c",
+		"ref: ce07d189b3de2a39d37fd68ae093b102ce3aabee",
 		"path: .cpa-source",
 		`CPA_SOURCE="$GITHUB_WORKSPACE/.cpa-source" go test -tags=integration ./... -count=1`,
 	} {

@@ -64,8 +64,8 @@ import (
 	"time"
 	"unsafe"
 
-	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginabi"
-	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginabi"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
 )
 
 type abiEnvelope struct {
@@ -391,6 +391,9 @@ func registerModelRouter(raw []byte) ([]byte, error) {
 	schemaVersion := registrationSchemaVersion
 	if request.SchemaVersion >= streamBodyOmissionSchemaVersion {
 		schemaVersion = streamBodyOmissionSchemaVersion
+	}
+	if request.SchemaVersion >= pluginabi.SchemaVersion {
+		schemaVersion = pluginabi.SchemaVersion
 	}
 	return okEnvelope(abiRegistration{
 		SchemaVersion: schemaVersion,
