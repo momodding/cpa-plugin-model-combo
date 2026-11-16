@@ -8,7 +8,7 @@ make, and a working C compiler; SQLite and the native ABI require CGO.
 Read README.md, Makefile, and the affected implementation and tests before editing.
 
 CPA owns provider credentials, protocol translation, proxy policy, and execution.
-Preserve minimum host compatibility with CPA v7.3.9. Keep routing failover,
+Preserve host compatibility with stock CPA v8.0.37. Keep routing failover,
 stream-start boundaries, model attribution, and durable SQLite history intact.
 Add a regression that exercises the real logic behind the evidenced bug.
 Keep edits within the supervisor's frozen bug objective.
