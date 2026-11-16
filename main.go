@@ -3,6 +3,8 @@ package main
 import (
 	"context"
 	"fmt"
+	"strings"
+	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
 )
@@ -21,14 +23,16 @@ type modelRouterPlugin struct {
 	attribution      *attributionTracker
 	modelsDevFetcher modelsDevCatalogFetcher
 	priceSync        *priceSyncState
+	credentials      *credentialSnapshots
 }
 
 var (
-	_ pluginapi.ModelRouter        = (*modelRouterPlugin)(nil)
-	_ pluginapi.ModelRegistrar     = (*modelRouterPlugin)(nil)
-	_ pluginapi.ProviderExecutor   = (*modelRouterPlugin)(nil)
-	_ pluginapi.RequestInterceptor = (*modelRouterPlugin)(nil)
-	_ pluginapi.UsagePlugin        = (*modelRouterPlugin)(nil)
+	_ pluginapi.ModelRouter            = (*modelRouterPlugin)(nil)
+	_ pluginapi.ModelRegistrar         = (*modelRouterPlugin)(nil)
+	_ pluginapi.ProviderExecutor       = (*modelRouterPlugin)(nil)
+	_ pluginapi.RequestInterceptor     = (*modelRouterPlugin)(nil)
+	_ pluginapi.RequestLifecyclePlugin = (*modelRouterPlugin)(nil)
+	_ pluginapi.UsagePlugin            = (*modelRouterPlugin)(nil)
 )
 
 func newModelRouterPlugin(configYAML []byte, previous *modelRouterPlugin) (*modelRouterPlugin, pluginapi.Metadata, error) {
@@ -41,12 +45,17 @@ func newModelRouterPlugin(configYAML []byte, previous *modelRouterPlugin) (*mode
 	attribution := newAttributionTracker(nil)
 	var fetcher modelsDevCatalogFetcher
 	priceSync := &priceSyncState{}
+	credentials := &credentialSnapshots{}
 	if previous != nil {
 		runtime = previous.runtime.Clone(cfg.Routes)
 		store = previous.store
 		attribution = previous.attribution
 		fetcher = previous.modelsDevFetcher
 		priceSync = previous.priceSync
+		credentials = previous.credentials
+		if credentials == nil {
+			credentials = &credentialSnapshots{}
+		}
 		if priceSync == nil {
 			priceSync = &priceSyncState{}
 		}
@@ -63,7 +72,7 @@ func newModelRouterPlugin(configYAML []byte, previous *modelRouterPlugin) (*mode
 			return nil, pluginapi.Metadata{}, err
 		}
 	}
-	plugin := &modelRouterPlugin{config: cfg, runtime: runtime, store: store, attribution: attribution, modelsDevFetcher: fetcher, priceSync: priceSync}
+	plugin := &modelRouterPlugin{config: cfg, runtime: runtime, store: store, attribution: attribution, modelsDevFetcher: fetcher, priceSync: priceSync, credentials: credentials}
 	metadata := pluginapi.Metadata{
 		Name:             pluginName,
 		Version:          pluginVersion,
@@ -105,17 +114,30 @@ func (p *modelRouterPlugin) HandleUsage(_ context.Context, record pluginapi.Usag
 	if p.attribution != nil {
 		attribution = p.attribution.Match(record)
 	}
-	_ = p.store.Record(storedRecordFromUsage(record, attribution))
+	stored := storedRecordFromUsage(record, attribution)
+	stored.CredentialLabel = p.credentials.label(record.AuthID, record.AuthIndex)
+	_ = p.store.Record(stored)
 }
 
 func (p *modelRouterPlugin) InterceptRequestBeforeAuth(_ context.Context, request pluginapi.RequestInterceptRequest) (pluginapi.RequestInterceptResponse, error) {
-	if p == nil || !p.config.Enabled || p.attribution == nil {
+	if p == nil || !p.config.Enabled {
 		return pluginapi.RequestInterceptResponse{}, nil
 	}
-	if _, routed := p.matchingRoute(request.RequestedModel); routed {
-		return pluginapi.RequestInterceptResponse{}, nil
+	requested := firstNonEmpty(strings.TrimSpace(request.RequestedModel), strings.TrimSpace(request.Model))
+	route, routed := p.matchingRoute(requested)
+	if p.store != nil && strings.TrimSpace(request.RequestID) != "" {
+		endpoint, _ := request.Metadata["request_path"].(string)
+		session := storedRequestSession{TraceID: strings.TrimSpace(request.TraceID), LifecycleRequestID: strings.TrimSpace(request.RequestID), RequestEndpoint: strings.TrimSpace(endpoint), RequestedModel: requested, Stream: request.Stream, StartedAt: time.Now().UTC()}
+		if routed {
+			session.RouterModel = route.Alias
+		}
+		if err := p.store.RecordSession(session); err != nil {
+			return pluginapi.RequestInterceptResponse{}, err
+		}
 	}
-	p.attribution.MarkDirectRequest(request)
+	if !routed && p.attribution != nil {
+		p.attribution.MarkDirectRequest(request)
+	}
 	return pluginapi.RequestInterceptResponse{}, nil
 }
 
@@ -124,6 +146,21 @@ func (p *modelRouterPlugin) InterceptRequestAfterAuth(_ context.Context, request
 		p.attribution.updateDirectRequest(request)
 	}
 	return pluginapi.RequestInterceptResponse{}, nil
+}
+
+func (p *modelRouterPlugin) HandleRequestComplete(_ context.Context, completion pluginapi.RequestCompletion) error {
+	if p == nil || !p.config.Enabled || p.store == nil || strings.TrimSpace(completion.RequestID) == "" {
+		return nil
+	}
+	latency := completion.CompletedAt.Sub(completion.StartedAt)
+	if completion.StartedAt.IsZero() || completion.CompletedAt.IsZero() || latency < 0 {
+		latency = 0
+	}
+	_, err := p.store.CompleteSession(storedRequestSession{
+		TraceID: strings.TrimSpace(completion.TraceID), LifecycleRequestID: strings.TrimSpace(completion.RequestID),
+		StartedAt: completion.StartedAt.UTC(), CompletedAt: completion.CompletedAt.UTC(), Outcome: string(completion.Outcome), HTTPStatus: completion.StatusCode, Latency: latency,
+	})
+	return err
 }
 
 func main() {}

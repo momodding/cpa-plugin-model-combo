@@ -127,6 +127,108 @@ func TestUsageManagementDashboardQueryOptions(t *testing.T) {
 	}
 }
 
+func TestUsageRequestHierarchy(t *testing.T) {
+	now := time.Now().UTC().Truncate(time.Second)
+	selection := newUsageRequestSelection(usagePageOptions{Sort: "time", Order: "asc", Limit: 10}, usageFilter{ProviderModel: "wanted"})
+	selection.add(storedUsageRecord{Sequence: 2, TraceID: "trace", RequestedAt: now, ProviderModel: "other", TotalTokens: 3}, estimatedCost{TotalUSD: 2})
+	selection.add(storedUsageRecord{Sequence: 1, TraceID: "trace", RequestedAt: now, ProviderModel: "wanted", TotalTokens: 5, Failed: true}, estimatedCost{TotalUSD: 1})
+	selection.addSession(storedRequestSession{TraceID: "trace", LifecycleRequestID: "inbound", StartedAt: now, RouterModel: "auto", Outcome: "succeeded"})
+	page := selection.finish(0, now)
+	if page.SchemaVersion != usageManagementSchemaVersion || page.Total != 1 || len(page.Items) != 1 {
+		t.Fatalf("unexpected page: %#v", page)
+	}
+	parent := page.Items[0]
+	if parent.TraceID != "trace" || parent.LifecycleRequestID != "inbound" || parent.Result != "success" || parent.TotalTokens != 8 || parent.EstimatedCost.TotalUSD != 3 || parent.Attribution != attributionRouted || len(parent.Attempts) != 2 || parent.Attempts[0].Sequence != 1 || parent.Attempts[1].Sequence != 2 {
+		t.Fatalf("unexpected parent: %#v", parent)
+	}
+
+	selection = newUsageRequestSelection(usagePageOptions{Sort: "time", Order: "asc", Offset: 1, Limit: 1}, usageFilter{})
+	selection.addSession(storedRequestSession{TraceID: "collision", LifecycleRequestID: "a", StartedAt: now, Outcome: "failed"})
+	selection.addSession(storedRequestSession{TraceID: "collision", LifecycleRequestID: "b", StartedAt: now, Outcome: "rejected", HTTPStatus: 429})
+	selection.add(storedUsageRecord{Sequence: 3, TraceID: "collision", RequestedAt: now, TotalTokens: 7}, estimatedCost{})
+	page = selection.finish(0, now)
+	if page.Total != 3 || len(page.Items) != 1 || page.Items[0].CorrelationWarning == "" || len(page.Items[0].Attempts) != 0 {
+		t.Fatalf("ambiguous page: %#v", page)
+	}
+}
+
+func TestUsageRequestLegacyAndLifecycleOnly(t *testing.T) {
+	now := time.Now().UTC()
+	selection := newUsageRequestSelection(usagePageOptions{Sort: "time", Order: "asc", Limit: 10}, usageFilter{})
+	selection.add(storedUsageRecord{Sequence: 1, Attribution: attributionRouted, RouterRequestID: "legacy", RouterAttempt: 1, RequestedAt: now, TotalTokens: 2}, estimatedCost{})
+	selection.add(storedUsageRecord{Sequence: 2, Attribution: attributionRouted, RouterRequestID: "legacy", RouterAttempt: 2, RequestedAt: now, TotalTokens: 3}, estimatedCost{})
+	selection.addSession(storedRequestSession{TraceID: "legacy", LifecycleRequestID: "inbound", StartedAt: now.Add(time.Second), Outcome: "rejected", HTTPStatus: 429})
+	page := selection.finish(0, now)
+	if page.Total != 2 || len(page.Items) != 2 || len(page.Items[0].Attempts) != 2 || page.Items[0].TotalTokens != 5 || len(page.Items[1].Attempts) != 0 || page.Items[1].Result != "http_429" || page.Items[1].TotalTokens != 0 {
+		t.Fatalf("legacy/lifecycle page: %#v", page)
+	}
+}
+
+// Concurrent identical requests were stored with swapped heuristic attribution; exact unambiguous sessions
+// must win in filters, overview and groups, while ambiguous or unmatched traces keep the stored heuristic.
+func TestUsageAccountingPrefersExactSessionAttribution(t *testing.T) {
+	store, err := openUsageStore(filepath.Join(t.TempDir(), "usage.db"), 365)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	now := time.Now().UTC().Add(-time.Minute)
+	records := []storedUsageRecord{
+		{TraceID: "aaaa0001", Attribution: attributionRouted, RouterModel: "auto"},
+		{TraceID: "bbbb0002", Attribution: attributionDirect},
+		{TraceID: "cccc0003", Attribution: attributionRouted, RouterModel: "stored"},
+		{TraceID: "dddd0004", Attribution: attributionRouted, RouterModel: "heuristic"},
+		{Attribution: attributionUnresolved},
+	}
+	for _, record := range records {
+		record.RequestedAt, record.ProviderModel, record.TotalTokens = now, "gpt", 1
+		if err := store.Record(record); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, session := range []storedRequestSession{
+		{TraceID: "aaaa0001", LifecycleRequestID: "a"},
+		{TraceID: "bbbb0002", LifecycleRequestID: "b", RouterModel: "auto"},
+		{TraceID: "cccc0003", LifecycleRequestID: "c1", RouterModel: "other"},
+		{TraceID: "cccc0003", LifecycleRequestID: "c2"},
+	} {
+		session.StartedAt = now
+		if err := store.RecordSession(session); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	groups, err := store.Groups(usageFilter{}, "router_model", "key", "asc", 0, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := make(map[string]uint64)
+	for _, group := range groups.Items {
+		got[group.Key] = group.Requests
+	}
+	if len(got) != 5 || got["direct"] != 1 || got["auto"] != 1 || got["stored"] != 1 || got["heuristic"] != 1 || got[attributionUnresolved] != 1 {
+		t.Fatalf("groups = %#v", got)
+	}
+	routed, err := store.Overview(usageFilter{Attribution: attributionRouted}, "hour")
+	if err != nil || routed.Summary.Requests != 3 {
+		t.Fatalf("routed overview = %d, %v; want auto, stored, heuristic", routed.Summary.Requests, err)
+	}
+	direct, err := store.Overview(usageFilter{Attribution: attributionDirect}, "hour")
+	if err != nil || direct.Summary.Requests != 1 {
+		t.Fatalf("direct overview = %d, %v; want only the exact direct trace", direct.Summary.Requests, err)
+	}
+	byModel, err := store.Overview(usageFilter{RouterModel: "auto"}, "hour")
+	requests, requestErr := store.Requests(usageFilter{RouterModel: "auto"}, "time", "asc", 0, 10)
+	if err != nil || requestErr != nil || byModel.Summary.Requests != 1 || requests.Total != 1 || requests.Items[0].TraceID != "bbbb0002" {
+		t.Fatalf("router filter: overview %d (%v), requests %#v (%v)", byModel.Summary.Requests, err, requests, requestErr)
+	}
+
+	stored, err := store.referenceUsageRecords(usageFilter{})
+	if err != nil || len(stored) != len(records) || stored[0].Attribution != attributionRouted || stored[0].RouterModel != "auto" || stored[1].Attribution != attributionDirect || stored[1].RouterModel != "" {
+		t.Fatalf("stored records changed: %#v, %v", stored, err)
+	}
+}
+
 func TestUsageManagementDashboardRejectsInvalidOptions(t *testing.T) {
 	store, _ := usageQueryFixture(t)
 	plugin := &modelRouterPlugin{store: store}
