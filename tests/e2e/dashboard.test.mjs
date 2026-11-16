@@ -296,3 +296,54 @@ test('dashboard tabs retain their browser interactions after source assembly', {
     await browser.close();
   }
 });
+
+test('account restrictions filter targets and reject stale selections', { timeout: 120_000 }, async () => {
+  const { dashboardUrl, managementKey, executablePath } = dashboardEnvironment();
+  const browser = await chromium.launch({ executablePath, headless: true, args: ['--no-sandbox', '--disable-setuid-sandbox'] });
+  const page = await browser.newPage();
+  const requests = [];
+  let saved;
+  try {
+    await page.route('**/v0/management/plugins/model-router/accounts', route => route.fulfill({ json: { credentials: [
+      { id: 'account-a', provider: 'Provider A', label: 'First', models: [{ id: 'model-a', entitlement: 'unknown' }] },
+      { id: 'account-b', provider: 'Provider B', label: 'Second', models: [{ id: 'model-b', entitlement: 'unknown' }] },
+    ] } }));
+    await page.route('**/v0/management/plugins/model-router/config', route => {
+      if (route.request().method() === 'PATCH') {
+        saved = route.request().postDataJSON();
+        return route.fulfill({ json: {} });
+      }
+      return route.fulfill({ json: { enabled: true, priority: 0, routes: [{ alias: 'auto', strategy: 'priority', cooldown_seconds: 60, allowed_accounts: ['missing'], targets: [{ model: 'model-a', weight: 1 }] }] } });
+    });
+    await page.route('**/v0/management/plugins/model-router/validate', route => route.fulfill({ json: {} }));
+    page.on('request', request => requests.push(new URL(request.url()).pathname));
+    await page.goto(dashboardUrl, { waitUntil: 'domcontentloaded' });
+    if (await page.locator('#auth-dock').isVisible()) {
+      await page.locator('#management-key').fill(managementKey);
+      await page.locator('#connect').click();
+    }
+    await page.locator('#model-status[data-tone="ready"]').waitFor();
+    const card = page.locator('.route-card').first();
+    assert.match(await card.locator('fieldset').textContent(), /No accounts selected: all accounts allowed/i);
+    await card.locator('[data-account-id="account-a"]').check();
+    await page.locator('#save').click();
+    assert.equal(saved, undefined, 'stale accounts must prevent saving');
+    await card.locator('[data-account-id="missing"]').uncheck();
+    const options = card.locator('select[data-target-field="model"] option');
+    assert.match(await options.filter({ hasText: 'model-a' }).textContent(), /entitlement unknown/);
+    assert.equal(await options.filter({ hasText: 'model-b' }).count(), 0);
+    await card.locator('[data-account-id="account-b"]').check();
+    assert.equal(await options.filter({ hasText: 'model-b' }).count(), 1);
+    assert.match(await card.locator('[data-account-id="account-b"]').locator('..').textContent(), /model-b \(unknown\)/);
+    await page.locator('#save').click();
+    assert.equal(saved, undefined, 'an account supporting no target must prevent saving');
+    await card.locator('button[data-action="add-target"]').click();
+    await card.locator('.target-row').nth(1).locator('select[data-target-field="model"]').selectOption('model-b');
+    await page.locator('#save').click();
+    await page.waitForFunction(() => document.querySelector('#save-state').textContent === 'Saved in CPA');
+    assert.deepEqual(saved.routes[0].allowed_accounts, ['account-a', 'account-b']);
+    assert.ok(!requests.includes('/v1/models') && !requests.includes('/v0/management/api-keys'));
+  } finally {
+    await browser.close();
+  }
+});

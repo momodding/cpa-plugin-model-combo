@@ -1232,7 +1232,7 @@ func verifyModelRouterManagementUI(t *testing.T, baseURL string, logs *smokeSync
 	if resourceResponse.StatusCode != http.StatusOK || !strings.Contains(string(resourceBody), "<title>Model Router</title>") {
 		t.Fatalf("dashboard status=%s body=%q", resourceResponse.Status, resourceBody)
 	}
-	for _, expected := range []string{"/v0/management/api-keys", "/v1/models", "<select data-target-field=\"model\"", "data-target-field=\"weight\"", "data-target-help"} {
+	for _, expected := range []string{"/v0/management/plugins/model-router/accounts", "<select data-target-field=\"model\"", "data-target-field=\"weight\"", "data-target-help"} {
 		if !strings.Contains(string(resourceBody), expected) {
 			t.Fatalf("dashboard missing %q", expected)
 		}

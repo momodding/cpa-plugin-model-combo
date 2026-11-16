@@ -269,7 +269,14 @@ func handleModelRouterABIMethod(ctx context.Context, method string, request []by
 		}
 		path := strings.TrimRight(strings.TrimSpace(rpcRequest.Path), "/")
 		if !strings.HasPrefix(path, modelRouterUsageBasePath+"/") {
-			return okEnvelope(handleModelRouterManagement(nil, rpcRequest.ManagementRequest))
+			// Dashboard, validation and catalog work before registration; they use the plugin when it is live.
+			plugin, _, done, err := beginModelRouterCall()
+			if err == nil {
+				defer done()
+			} else {
+				plugin = nil
+			}
+			return okEnvelope(handleModelRouterManagementWithHost(plugin, rpcRequest.ManagementRequest, callbackModelHost{hostCallbackID: rpcRequest.HostCallbackID}))
 		}
 	}
 	plugin, metadata, done, err := beginModelRouterCall()

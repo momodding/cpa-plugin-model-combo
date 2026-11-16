@@ -368,6 +368,83 @@ func TestExecuteStreamAttemptsWeightedTargetOncePerRequest(t *testing.T) {
 	}
 }
 
+func TestRestrictedStreamAccountFailoverAndCommit(t *testing.T) {
+	route := testModelRoute("smart", routeStrategyPriority, 30, "model-a", "model-b")
+	route.AllowedAccounts = []string{"a", "b"}
+	plugin := testRouterPlugin(route)
+	host := routingTestHost()
+	host.reads = map[string][]pluginapi.HostModelStreamReadResponse{
+		"b": {{Payload: []byte("data: {\"model\":\"model-a(high)\"}\n\n"), Done: true}},
+	}
+	host.start = func(request pluginapi.HostModelExecutionRequest) (pluginapi.HostModelStreamResponse, error) {
+		if request.AuthID == "a" {
+			return pluginapi.HostModelStreamResponse{StatusCode: 429}, nil
+		}
+		return pluginapi.HostModelStreamResponse{StatusCode: 200, StreamID: "b"}, nil
+	}
+	if err := plugin.executeStreamWithHost(context.Background(), pluginapi.ExecutorRequest{Model: "smart(high)"}, "plugin", host, nil); err != nil {
+		t.Fatal(err)
+	}
+	if len(host.startCalls) != 2 || host.startCalls[0].AuthID != "a" || host.startCalls[1].AuthID != "b" || host.startCalls[1].ForcedProvider != "two" || host.startCalls[1].Model != "model-a(high)" || host.modelCalls != 1 || host.listCalls != 1 || len(host.closed) != 1 {
+		t.Fatalf("calls = %#v, catalog calls = %d/%d, closed = %#v", host.startCalls, host.modelCalls, host.listCalls, host.closed)
+	}
+	plugin = testRouterPlugin(route)
+	host = routingTestHost()
+	host.reads = map[string][]pluginapi.HostModelStreamReadResponse{"a": {
+		{Payload: []byte("data: {}\n\n")}, {Error: "status 429: secret upstream body"},
+	}}
+	host.start = func(pluginapi.HostModelExecutionRequest) (pluginapi.HostModelStreamResponse, error) {
+		return pluginapi.HostModelStreamResponse{StatusCode: 200, StreamID: "a"}, nil
+	}
+	err := plugin.executeStreamWithHost(context.Background(), pluginapi.ExecutorRequest{Model: "smart"}, "plugin", host, nil)
+	if statusFromError(err) != 429 || strings.Contains(err.Error(), "secret") || len(host.startCalls) != 1 || len(host.closed) != 1 {
+		t.Fatalf("error = %v, calls = %#v, closed = %#v", err, host.startCalls, host.closed)
+	}
+}
+
+func TestRestrictedStreamUnavailableAndCancellation(t *testing.T) {
+	route := testModelRoute("smart", routeStrategyPriority, 30, "model-a")
+	route.AllowedAccounts = []string{"missing"}
+	plugin := testRouterPlugin(route)
+	host := routingTestHost()
+	err := plugin.executeStreamWithHost(context.Background(), pluginapi.ExecutorRequest{Model: "smart"}, "plugin", host, nil)
+	if codeFromError(err, "") != "model_route_unavailable" || len(host.startCalls) != 0 {
+		t.Fatalf("error = %v, calls = %#v", err, host.startCalls)
+	}
+	route.AllowedAccounts = []string{"a", "b"}
+	plugin = testRouterPlugin(route)
+	ctx, cancel := context.WithCancel(context.Background())
+	host.start = func(pluginapi.HostModelExecutionRequest) (pluginapi.HostModelStreamResponse, error) {
+		cancel()
+		return pluginapi.HostModelStreamResponse{StatusCode: 429, StreamID: "cancelled"}, nil
+	}
+	err = plugin.executeStreamWithHost(ctx, pluginapi.ExecutorRequest{Model: "smart"}, "plugin", host, nil)
+	if !errors.Is(err, context.Canceled) || len(host.startCalls) != 1 || len(host.closed) != 1 {
+		t.Fatalf("error = %v, calls = %#v, closed = %#v", err, host.startCalls, host.closed)
+	}
+}
+
+func TestRestrictedStreamPayloadFailureOnLastAccountDoesNotCool(t *testing.T) {
+	route := testModelRoute("smart", routeStrategyPriority, 30, "model-a")
+	route.AllowedAccounts = []string{"a"}
+	plugin := testRouterPlugin(route)
+	host := routingTestHost()
+	host.start = func(pluginapi.HostModelExecutionRequest) (pluginapi.HostModelStreamResponse, error) {
+		return pluginapi.HostModelStreamResponse{StatusCode: 200, StreamID: "a"}, nil
+	}
+	host.reads = map[string][]pluginapi.HostModelStreamReadResponse{"a": {
+		{Payload: []byte("data: {}\n\n")}, {Error: "status 429: secret upstream body"},
+	}}
+	err := plugin.executeStreamWithHost(context.Background(), pluginapi.ExecutorRequest{Model: "smart"}, "plugin", host, nil)
+	if statusFromError(err) != 429 || len(host.startCalls) != 1 {
+		t.Fatalf("error = %v, calls = %#v", err, host.startCalls)
+	}
+	host.reads = map[string][]pluginapi.HostModelStreamReadResponse{"a": {{Payload: []byte("data: {}\n\n"), Done: true}}}
+	if err := plugin.executeStreamWithHost(context.Background(), pluginapi.ExecutorRequest{Model: "smart"}, "plugin", host, nil); err != nil || len(host.startCalls) != 2 {
+		t.Fatalf("error = %v, calls = %#v; route cooled after committed payload", err, host.startCalls)
+	}
+}
+
 func TestStreamModelRewriterBuffersSplitSSE(t *testing.T) {
 	rewriter := newStreamModelRewriter("smart")
 	if first := rewriter.Rewrite([]byte(`data: {"model":"physical",`)); first != nil {

@@ -83,8 +83,15 @@ func (p *modelRouterPlugin) executeStreamWithHost(ctx context.Context, request p
 	requestedModel := strings.TrimSpace(request.Model)
 	bodyInfo := bodyForExecution(request)
 	policy := p.config.fallbackPolicy()
+	accounts, unavailable, err := p.routeAccounts(route, requestedModel, host)
+	if err != nil {
+		return err
+	}
 	var lastErr error
 	attempted := make(map[string]struct{}, len(route.Targets))
+	for key := range unavailable {
+		attempted[key] = struct{}{}
+	}
 	for attempt := 0; attempt < len(route.Targets); attempt++ {
 		if err := ctx.Err(); err != nil {
 			return err
@@ -98,22 +105,32 @@ func (p *modelRouterPlugin) executeStreamWithHost(ctx context.Context, request p
 		}
 		attempted[routeKey(selection.model)] = struct{}{}
 		target := targetModel(requestedModel, selection.model)
-		p.attribution.MarkRouted(route.Alias, target, request.Headers)
-		setStreamPhase(ctx, "start_stream", target, attempt+1)
-		receivedPayload, err := forwardStreamAttempt(ctx, request, bodyInfo, target, requestedModel, pluginStreamID, host, onPayload)
-		if err == nil {
-			return nil
+		candidates := accounts[routeKey(selection.model)]
+		if len(route.AllowedAccounts) == 0 {
+			candidates = []accountCredential{{}}
 		}
-		if cancelled := ctx.Err(); cancelled != nil {
-			return cancelled
+		for index, account := range candidates {
+			p.attribution.MarkRouted(route.Alias, target, request.Headers)
+			setStreamPhase(ctx, "start_stream", target, attempt+1)
+			receivedPayload, err := forwardStreamAttempt(ctx, request, bodyInfo, target, requestedModel, pluginStreamID, host, onPayload, account)
+			if err == nil {
+				return nil
+			}
+			if cancelled := ctx.Err(); cancelled != nil {
+				return cancelled
+			}
+			retry := eligibleRouteFailure(err, policy)
+			if account.ID != "" {
+				err = safeRestrictedFailure(err)
+			}
+			if retry && (len(route.AllowedAccounts) == 0 || (!receivedPayload && index == len(candidates)-1)) {
+				p.runtime.MarkFailure(route, selection.model)
+			}
+			if receivedPayload || !retry {
+				return err
+			}
+			lastErr = err
 		}
-		if eligibleRouteFailure(err, policy) {
-			p.runtime.MarkFailure(route, selection.model)
-		}
-		if receivedPayload || !eligibleRouteFailure(err, policy) {
-			return err
-		}
-		lastErr = err
 	}
 	detail := ""
 	if lastErr != nil {
@@ -122,9 +139,9 @@ func (p *modelRouterPlugin) executeStreamWithHost(ctx context.Context, request p
 	return newRouteError(http.StatusServiceUnavailable, "model_route_unavailable", route.Alias, fmt.Sprintf("no available candidate for model route %q", route.Alias), detail)
 }
 
-func forwardStreamAttempt(ctx context.Context, request pluginapi.ExecutorRequest, bodyInfo executionBody, target, requestedModel, pluginStreamID string, host modelHost, onPayload func()) (bool, error) {
+func forwardStreamAttempt(ctx context.Context, request pluginapi.ExecutorRequest, bodyInfo executionBody, target, requestedModel, pluginStreamID string, host modelHost, onPayload func(), account accountCredential) (bool, error) {
 	setStreamCleanup(ctx, "upstream", "pending")
-	response, err := host.StartStream(hostRequest(request, bodyInfo, target, true))
+	response, err := host.StartStream(hostRequest(request, bodyInfo, target, true, account))
 	if response.StreamID != "" {
 		if call, ok := ctx.Value(nativeStreamContextKey{}).(*nativeStreamCall); ok {
 			call.mu.Lock()
@@ -134,7 +151,11 @@ func forwardStreamAttempt(ctx context.Context, request pluginapi.ExecutorRequest
 		closeUpstream := sync.OnceFunc(func() {
 			setStreamCleanup(ctx, "upstream", "running")
 			if err := host.CloseStream(response.StreamID); err != nil {
-				logStreamCleanupError(ctx, response.StreamID, "close_upstream", err)
+				if account.ID != "" {
+					logStreamCleanupError(ctx, response.StreamID, "close_upstream", safeAccountFailure(statusFromError(err)))
+				} else {
+					logStreamCleanupError(ctx, response.StreamID, "close_upstream", err)
+				}
 			}
 			setStreamCleanup(ctx, "upstream", "returned")
 		})

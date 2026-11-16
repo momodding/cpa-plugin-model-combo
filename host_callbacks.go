@@ -60,6 +60,37 @@ func (host callbackModelHost) StartStream(request pluginapi.HostModelExecutionRe
 	return response, nil
 }
 
+func (host callbackModelHost) AuthModels() ([]pluginapi.HostAuthModels, error) {
+	result, err := callHost(pluginabi.MethodHostAuthModels, struct {
+		pluginapi.HostAuthModelsRequest
+		HostCallbackID string `json:"host_callback_id,omitempty"`
+	}{HostCallbackID: host.hostCallbackID})
+	if err != nil {
+		return nil, err
+	}
+	var response pluginapi.HostAuthModelsResponse
+	if err := json.Unmarshal(result, &response); err != nil {
+		return nil, fmt.Errorf("decode host.auth.models response: %w", err)
+	}
+	return response.Credentials, nil
+}
+
+func (host callbackModelHost) AuthList() ([]pluginapi.HostAuthFileEntry, error) {
+	result, err := callHost(pluginabi.MethodHostAuthList, struct {
+		HostCallbackID string `json:"host_callback_id,omitempty"`
+	}{HostCallbackID: host.hostCallbackID})
+	if err != nil {
+		return nil, err
+	}
+	var response struct {
+		Files []pluginapi.HostAuthFileEntry `json:"files"`
+	}
+	if err := json.Unmarshal(result, &response); err != nil {
+		return nil, fmt.Errorf("decode host.auth.list response: %w", err)
+	}
+	return response.Files, nil
+}
+
 func (callbackModelHost) ReadStream(streamID string) (pluginapi.HostModelStreamReadResponse, error) {
 	result, err := callHost(pluginabi.MethodHostModelStreamRead, pluginapi.HostModelStreamReadRequest{StreamID: streamID})
 	if err != nil {

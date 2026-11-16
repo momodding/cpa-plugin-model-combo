@@ -89,12 +89,12 @@ type usageRequestDetail struct {
 	CorrelationWarning       string               `json:"correlation_warning,omitempty"`
 	LifecycleRequestID       string               `json:"lifecycle_request_id,omitempty"`
 	Outcome                  string               `json:"outcome,omitempty"`
-	Result                   string         `json:"result"`
-	GenerationNS             uint64         `json:"generation_ns"`
-	TPS                      float64        `json:"tps"`
-	EffectiveCacheReadTokens uint64         `json:"effective_cache_read_tokens"`
-	CacheHit                 bool           `json:"cache_hit"`
-	EstimatedCost            *estimatedCost `json:"estimated_cost,omitempty"`
+	Result                   string               `json:"result"`
+	GenerationNS             uint64               `json:"generation_ns"`
+	TPS                      float64              `json:"tps"`
+	EffectiveCacheReadTokens uint64               `json:"effective_cache_read_tokens"`
+	CacheHit                 bool                 `json:"cache_hit"`
+	EstimatedCost            *estimatedCost       `json:"estimated_cost,omitempty"`
 }
 
 func requestDetail(record storedUsageRecord, resolver modelPriceResolver) usageRequestDetail {

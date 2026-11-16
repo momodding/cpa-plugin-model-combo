@@ -1,8 +1,6 @@
 'use strict';
 const CONFIG_API='/v0/management/plugins/model-router/config';
 const VALIDATE_API='/v0/management/plugins/model-router/validate';
-const API_KEYS_API='/v0/management/api-keys';
-const MODELS_API='/v1/models';
 const USAGE_API='/v0/management/plugins/model-router/usage';
 const ROUTER_FILTER_MODEL_PREFIX='model:';
 const ROUTER_FILTER_ATTRIBUTION_PREFIX='attribution:';
