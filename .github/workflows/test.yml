@@ -75,6 +75,7 @@ jobs:
           umask 077
           fixture="$(mktemp -d "$RUNNER_TEMP/dashboard-e2e.XXXXXX")"
           cpa_pid=""
+          # shellcheck disable=SC2329 # Invoked by the EXIT trap.
           cleanup() {
             if [[ -n "$cpa_pid" ]]; then
               kill "$cpa_pid" 2>/dev/null || true
