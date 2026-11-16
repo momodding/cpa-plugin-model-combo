@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginabi"
-	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginabi"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
 )
 
 func TestABIRegistrationRoutingAndCountTokens(t *testing.T) {
@@ -35,7 +35,7 @@ func TestABIRegistrationRoutingAndCountTokens(t *testing.T) {
 	if err := json.Unmarshal(registrationEnvelope.Result, &registration); err != nil {
 		t.Fatalf("decode registration result: %v", err)
 	}
-	if !registrationEnvelope.OK || registration.SchemaVersion != registrationSchemaVersion || registration.Metadata.Name != pluginName || registration.Metadata.Version != "0.4.2" || !registration.Capabilities.ModelRegistrar || !registration.Capabilities.ModelRouter || !registration.Capabilities.Executor || !registration.Capabilities.RequestInterceptor || registration.Capabilities.RequestLifecycle || registration.Capabilities.ResponseInterceptor || registration.Capabilities.StreamInterceptor || !registration.Capabilities.UsagePlugin || !registration.Capabilities.ManagementAPI {
+	if !registrationEnvelope.OK || registration.SchemaVersion != registrationSchemaVersion || registration.Metadata.Name != pluginName || registration.Metadata.Version != "0.4.2" || !registration.Capabilities.ModelRegistrar || !registration.Capabilities.ModelRouter || !registration.Capabilities.Executor || !registration.Capabilities.RequestInterceptor || !registration.Capabilities.RequestLifecycle || registration.Capabilities.ResponseInterceptor || registration.Capabilities.StreamInterceptor || !registration.Capabilities.UsagePlugin || !registration.Capabilities.ManagementAPI {
 		t.Fatalf("registration = %#v", registration)
 	}
 
@@ -109,6 +109,29 @@ func TestABIRegistrationUsesStreamBodyOmissionWhenHostSupportsIt(t *testing.T) {
 	}
 	if registration.SchemaVersion != streamBodyOmissionSchemaVersion {
 		t.Fatalf("schema version = %d, want %d", registration.SchemaVersion, streamBodyOmissionSchemaVersion)
+	}
+}
+
+func TestABIRegistrationUsesV8Schema(t *testing.T) {
+	resetModelRouterABIState(t)
+	request, err := json.Marshal(lifecycleRequest{ConfigYAML: []byte("routes: []\n"), SchemaVersion: pluginabi.SchemaVersion})
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := handleModelRouterABIMethod(t.Context(), pluginabi.MethodPluginRegister, request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var envelope abiEnvelope
+	if err := json.Unmarshal(raw, &envelope); err != nil {
+		t.Fatal(err)
+	}
+	var registration abiRegistration
+	if err := json.Unmarshal(envelope.Result, &registration); err != nil {
+		t.Fatal(err)
+	}
+	if !envelope.OK || pluginabi.ABIVersion != 1 || pluginabi.SchemaVersion != 6 || registration.SchemaVersion != 6 {
+		t.Fatalf("unexpected ABI/schema registration: ABI %d, SDK schema %d, registration %+v", pluginabi.ABIVersion, pluginabi.SchemaVersion, registration)
 	}
 }
 

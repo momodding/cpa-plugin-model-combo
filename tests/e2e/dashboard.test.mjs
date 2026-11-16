@@ -296,3 +296,192 @@ test('dashboard tabs retain their browser interactions after source assembly', {
     await browser.close();
   }
 });
+
+test('account restrictions filter targets and reject stale selections', { timeout: 120_000 }, async () => {
+  const { dashboardUrl, managementKey, executablePath } = dashboardEnvironment();
+  const browser = await chromium.launch({ executablePath, headless: true, args: ['--no-sandbox', '--disable-setuid-sandbox'] });
+  const page = await browser.newPage();
+  const requests = [];
+  let saved;
+  try {
+    await page.route('**/v0/management/plugins/model-router/accounts', route => route.fulfill({ json: { credentials: [
+      { id: 'account-a', provider: 'Provider A', label: 'First', models: [{ id: 'model-a', entitlement: 'unknown' }] },
+      { id: 'account-b', provider: 'Provider B', label: 'Second', models: [{ id: 'model-b', entitlement: 'unknown' }] },
+    ] } }));
+    await page.route('**/v0/management/plugins/model-router/config', route => {
+      if (route.request().method() === 'PATCH') {
+        saved = route.request().postDataJSON();
+        return route.fulfill({ json: {} });
+      }
+      return route.fulfill({ json: { enabled: true, priority: 0, routes: [{ alias: 'auto', strategy: 'priority', cooldown_seconds: 60, allowed_accounts: ['missing'], targets: [{ model: 'model-a', weight: 1 }] }] } });
+    });
+    await page.route('**/v0/management/plugins/model-router/validate', route => route.fulfill({ json: {} }));
+    page.on('request', request => requests.push(new URL(request.url()).pathname));
+    await page.goto(dashboardUrl, { waitUntil: 'domcontentloaded' });
+    if (await page.locator('#auth-dock').isVisible()) {
+      await page.locator('#management-key').fill(managementKey);
+      await page.locator('#connect').click();
+    }
+    await page.locator('#model-status[data-tone="ready"]').waitFor();
+    const card = page.locator('.route-card').first();
+    assert.match(await card.locator('fieldset').textContent(), /No accounts selected: all accounts allowed/i);
+    await card.locator('[data-account-id="account-a"]').check();
+    await page.locator('#save').click();
+    assert.equal(saved, undefined, 'stale accounts must prevent saving');
+    await card.locator('[data-account-id="missing"]').uncheck();
+    const options = card.locator('select[data-target-field="model"] option');
+    assert.match(await options.filter({ hasText: 'model-a' }).textContent(), /entitlement unknown/);
+    assert.equal(await options.filter({ hasText: 'model-b' }).count(), 0);
+    await card.locator('[data-account-id="account-b"]').check();
+    assert.equal(await options.filter({ hasText: 'model-b' }).count(), 1);
+    assert.match(await card.locator('[data-account-id="account-b"]').locator('..').textContent(), /model-b \(unknown\)/);
+    await page.locator('#save').click();
+    assert.equal(saved, undefined, 'an account supporting no target must prevent saving');
+    await card.locator('button[data-action="add-target"]').click();
+    await card.locator('.target-row').nth(1).locator('select[data-target-field="model"]').selectOption('model-b');
+    await page.locator('#save').click();
+    await page.waitForFunction(() => document.querySelector('#save-state').textContent === 'Saved in CPA');
+    assert.deepEqual(saved.routes[0].allowed_accounts, ['account-a', 'account-b']);
+    assert.ok(!requests.includes('/v1/models') && !requests.includes('/v0/management/api-keys'));
+  } finally {
+    await browser.close();
+  }
+});
+
+test('request details render one expandable parent per trace with ordered executions', { timeout: 120_000 }, async () => {
+  const { dashboardUrl, managementKey, executablePath } = dashboardEnvironment();
+  const browser = await chromium.launch({ executablePath, headless: true, args: ['--no-sandbox', '--disable-setuid-sandbox'] });
+  const page = await browser.newPage({ viewport: { width: 1600, height: 900 } });
+  const pageErrors = [];
+  page.on('pageerror', (error) => pageErrors.push(error.message));
+  const now = Date.now();
+  const at = (seconds) => new Date(now - 60_000 + seconds * 1000).toISOString();
+  const counters = { requests: 4, failed_requests: 2, input_tokens: 0, output_tokens: 0, reasoning_tokens: 0, cached_tokens: 0, cache_read_tokens: 0, effective_cache_read_tokens: 0, cache_creation_tokens: 0, total_tokens: 0 };
+  const child = (sequence, extra) => ({ sequence, requested_at: at(sequence), attribution: 'routed', router_model: 'auto', trace_id: 'aaaa1111', request_id: `exec-${sequence}`, provider: 'openai', source: 'openai', result: 'success', ...extra });
+  const items = [
+    {
+      sequence: 1, requested_at: at(1), attribution: 'routed', router_model: 'auto', trace_id: 'aaaa1111', lifecycle_request_id: 'life-1',
+      request_endpoint: '/v1/chat/completions', requested_model: 'auto', result: 'success', attempt_count: 2,
+      attempts: [
+        child(1, { provider_model: 'gpt-a', credential_label: 'Work account', result: 'http_429', failed: true, status_code: 429 }),
+        child(2, { provider_model: 'gpt-b', credential_label: '', auth_id: 'raw-credential-id-must-stay-hidden' }),
+      ],
+    },
+    {
+      sequence: 3, requested_at: at(3), attribution: 'routed', router_model: 'auto', trace_id: 'bbbb2222', lifecycle_request_id: 'life-2',
+      request_endpoint: '/v1/responses', requested_model: 'auto', result: 'unknown', attempt_count: 1,
+      correlation_warning: 'trace shared by several inbound requests',
+      attempts: [child(3, { trace_id: 'bbbb2222', provider_model: 'gpt-c', credential_label: 'Backup' })],
+    },
+    {
+      sequence: 4, requested_at: at(4), attribution: 'routed', router_model: 'auto', trace_id: 'cccc3333', lifecycle_request_id: 'life-3',
+      request_endpoint: '/v1/chat/completions', requested_model: 'auto', result: 'failed',
+    },
+  ];
+  const preferenceWrites = [];
+  try {
+    await page.route('**/v0/management/plugins/model-router/accounts', route => route.fulfill({ json: { credentials: [] } }));
+    await page.route('**/v0/management/plugins/model-router/config', route => route.fulfill({ json: { enabled: true, priority: 0, routes: [] } }));
+    await page.route('**/v0/management/plugins/model-router/validate', route => route.fulfill({ json: {} }));
+    await page.route('**/v0/management/plugins/model-router/usage/**', route => {
+      const request = route.request();
+      const path = new URL(request.url()).pathname;
+      if (path.endsWith('/preferences')) {
+        if (request.method() === 'PUT') {
+          preferenceWrites.push(request.postDataJSON());
+          return route.fulfill({ json: request.postDataJSON() });
+        }
+        return route.fulfill({ json: { hidden_request_columns: ['trace_id'] } });
+      }
+      if (path.endsWith('/dashboard')) {
+        const generatedAt = new Date().toISOString();
+        return route.fulfill({ json: {
+          schema_version: 2, generated_at: generatedAt, price_book_revision: 0,
+          overview: { generated_at: generatedAt, summary: counters, costs: {}, series: [], router_models: [], provider_models: [], sources: [], service_tiers: [], results: [] },
+          groups: { generated_at: generatedAt, dimension: 'provider_model', total: 0, offset: 0, limit: 50, items: [] },
+          requests: { generated_at: generatedAt, total: items.length, offset: 0, limit: 50, items },
+        } });
+      }
+      return route.fulfill({ json: {} });
+    });
+    await page.goto(dashboardUrl, { waitUntil: 'domcontentloaded' });
+    if (await page.locator('#auth-dock').isVisible()) {
+      await page.locator('#management-key').fill(managementKey);
+      await page.locator('#connect').click();
+    }
+    await page.locator('#workspace').waitFor({ state: 'visible' });
+    await page.getByRole('tab', { name: 'Usage tracking' }).click();
+    await waitForUsageReady(page);
+
+    const columns = await page.locator('#request-headers th').evaluateAll((headers) => headers.map((header) => header.dataset.column));
+    assert.ok(!columns.includes('trace_id'), 'a persisted hidden trace column must be accepted and hidden');
+    for (const key of ['request_endpoint', 'requested_model', 'credential']) assert.ok(columns.includes(key), `${key} column should be listed`);
+    const cells = async (row) => {
+      const texts = await row.locator('td').allTextContents();
+      return Object.fromEntries(columns.map((key, index) => [key, texts[index].trim()]));
+    };
+    const parents = page.locator('#usage-requests tr.request-parent-row');
+    const children = page.locator('#usage-requests tr.request-attempt-row');
+    assert.equal(await parents.count(), 3);
+    assert.equal(await children.count(), 3);
+    assert.equal(await children.first().isVisible(), false, 'executions start collapsed');
+
+    const first = await cells(parents.nth(0));
+    assert.equal(first.request_endpoint, '/v1/chat/completions');
+    assert.equal(first.requested_model, 'auto');
+    assert.equal(first.credential, 'Work account, Unavailable');
+    assert.match(first.provider_model, /gpt-a, gpt-b/);
+    assert.match(first.result, /Success/);
+
+    const toggle = parents.nth(0).locator('button[data-request-toggle]');
+    assert.equal(await toggle.getAttribute('aria-expanded'), 'false');
+    await toggle.click();
+    assert.equal(await toggle.getAttribute('aria-expanded'), 'true');
+    assert.equal(await children.nth(0).isVisible(), true);
+    assert.equal(await children.nth(1).isVisible(), true);
+    assert.equal(await children.nth(2).isVisible(), false, 'other traces stay collapsed');
+    const failed = await cells(children.nth(0));
+    const succeeded = await cells(children.nth(1));
+    assert.match(failed.time, /^Execution 1/);
+    assert.equal(failed.provider_model, 'gpt-a');
+    assert.equal(failed.credential, 'Work account');
+    assert.equal(failed.request_endpoint, '/v1/chat/completions');
+    assert.match(failed.result, /HTTP 429/);
+    assert.match(succeeded.time, /^Execution 2/);
+    assert.equal(succeeded.credential, 'Unavailable');
+    assert.doesNotMatch(await page.locator('#usage-requests').textContent(), /raw-credential-id-must-stay-hidden/);
+
+    const ambiguous = parents.nth(1);
+    assert.match(await ambiguous.locator('.request-warning[role="note"]').textContent(), /Correlation warning: trace shared by several inbound requests/);
+    assert.match((await cells(ambiguous)).result, /Unknown/);
+
+    const lifecycleOnly = parents.nth(2);
+    assert.equal(await lifecycleOnly.locator('button[data-request-toggle]').count(), 0, 'a parent without executions has nothing to expand');
+    const orphan = await cells(lifecycleOnly);
+    assert.equal(orphan.provider_model, 'No executions recorded');
+    assert.equal(orphan.request_endpoint, '/v1/chat/completions');
+    assert.match(orphan.result, /Failed/);
+
+    const refreshed = page.waitForResponse((response) => response.url().includes('/usage/dashboard'));
+    await page.locator('#usage-refresh').click();
+    await refreshed;
+    await waitForUsageReady(page);
+    assert.equal(await page.locator('#usage-requests tr.request-parent-row').nth(0).locator('button[data-request-toggle]').getAttribute('aria-expanded'), 'true', 'expansion survives refresh');
+    assert.equal(await children.nth(0).isVisible(), true);
+
+    await page.locator('#usage-requests tr.request-parent-row').nth(0).locator('button[data-request-toggle]').focus();
+    await page.keyboard.press('Enter');
+    assert.equal(await children.nth(0).isVisible(), false, 'Enter collapses the executions');
+    assert.equal(await page.evaluate(() => document.activeElement?.dataset.requestToggle), 'trace:aaaa1111', 'focus stays on the toggle');
+
+    await page.locator('#request-columns summary').click();
+    await page.locator('#request-column-options input[data-column-key="credential"]').uncheck();
+    await page.waitForFunction(() => !document.querySelector('#request-table th[data-column="credential"]'));
+    for (let attempt = 0; attempt < 40 && !preferenceWrites.length; attempt++) await page.waitForTimeout(50);
+    const saved = preferenceWrites.at(-1);
+    assert.deepEqual([...saved.hidden_request_columns].sort(), ['credential', 'trace_id']);
+    assert.deepEqual(pageErrors, [], 'dashboard should not raise browser runtime errors');
+  } finally {
+    await browser.close();
+  }
+});

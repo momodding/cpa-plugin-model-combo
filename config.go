@@ -41,6 +41,7 @@ type modelRoute struct {
 	Strategy        string
 	CooldownSeconds int
 	Targets         []modelTarget
+	AllowedAccounts []string
 }
 
 type modelTargetYAML struct {
@@ -55,6 +56,22 @@ type modelRouteYAML struct {
 	LegacyCooldownSeconds *int               `yaml:"cooldown-seconds,omitempty" json:"cooldown-seconds,omitempty"`
 	Models                *[]string          `yaml:"models,omitempty" json:"models,omitempty"`
 	Targets               *[]modelTargetYAML `yaml:"targets,omitempty" json:"targets,omitempty"`
+	AllowedAccounts       accountIDList      `yaml:"allowed_accounts,omitempty" json:"allowed_accounts,omitempty"`
+}
+
+type accountIDList []string
+
+func (ids *accountIDList) UnmarshalYAML(node *yaml.Node) error {
+	if node.Kind != yaml.SequenceNode {
+		return fmt.Errorf("allowed_accounts must be an array of strings")
+	}
+	for index, item := range node.Content {
+		if item.Kind != yaml.ScalarNode || item.ShortTag() != "!!str" {
+			return fmt.Errorf("allowed_accounts[%d] must be a string", index)
+		}
+		*ids = append(*ids, item.Value)
+	}
+	return nil
 }
 
 type routerConfig struct {
@@ -159,11 +176,25 @@ func decodeRouterConfig(raw []byte) (routerConfig, error) {
 		} else if item.Models != nil {
 			targets = normalizeLegacyTargetList(*item.Models)
 		}
+		var accounts []string
+		seenAccounts := make(map[string]int, len(item.AllowedAccounts))
+		for accountIndex, id := range item.AllowedAccounts {
+			id = strings.TrimSpace(id)
+			if id == "" {
+				return routerConfig{}, fmt.Errorf("routes[%d].allowed_accounts[%d]: account ID is required", index, accountIndex)
+			}
+			if previous, duplicate := seenAccounts[id]; duplicate {
+				return routerConfig{}, fmt.Errorf("routes[%d].allowed_accounts[%d]: duplicate account ID (also at index %d)", index, accountIndex, previous)
+			}
+			seenAccounts[id] = accountIndex
+			accounts = append(accounts, id)
+		}
 		route := modelRoute{
 			Alias:           strings.TrimSpace(item.Alias),
 			Strategy:        strings.ToLower(strings.TrimSpace(item.Strategy)),
 			CooldownSeconds: cooldown,
 			Targets:         targets,
+			AllowedAccounts: accounts,
 		}
 		if route.Strategy == "" {
 			route.Strategy = routeStrategyPriority
@@ -320,6 +351,12 @@ func routeSignature(route modelRoute) string {
 		builder.WriteString(strings.TrimSpace(target.Model))
 		builder.WriteByte('\n')
 		builder.WriteString(strconv.Itoa(target.Weight))
+	}
+	for _, id := range route.AllowedAccounts {
+		builder.WriteByte('\n')
+		builder.WriteString(strconv.Itoa(len(id)))
+		builder.WriteByte(':')
+		builder.WriteString(id)
 	}
 	return builder.String()
 }

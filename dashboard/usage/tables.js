@@ -55,7 +55,8 @@ function statusCell(row,result){
   cell.className='text-cell';
   const badge=document.createElement('span');
   badge.className='status-pill '+(result==='success'?'success':'failure');
-  badge.textContent=resultDisplay(result);
+  if(result==='unknown')badge.className='status-pill';
+  badge.textContent=result==='unknown'?'Unknown':String(result||'').startsWith('http_')?'Failed · '+resultDisplay(result):resultDisplay(result);
   cell.appendChild(badge);row.appendChild(cell);
 }
 function groupCell(row,item,column){
@@ -72,11 +73,25 @@ function groupCell(row,item,column){
   default:return tableCell(row,formatNumber(item[column.key]));
   }
 }
-function requestCell(row,item,column){
+const requestValueFields={provider_model:'provider_model',provider:'provider',source:'source',credential:'credential_label'};
+// Parents carry no execution identity, so they summarize their delivered children. A blank credential label is never replaced by an ID or token.
+function requestValue(item,key,child){
+  const attempts=!child&&Array.isArray(item.attempts)?item.attempts:[];
+  if(attempts.length)return Array.from(new Set(attempts.map(attempt=>requestValue(attempt,key,true)).filter(Boolean))).join(', ');
+  const own=String(item[requestValueFields[key]]||'').trim();
+  if(own)return own;
+  if(key==='credential'&&(child||item.provider_model))return 'Unavailable';
+  return key==='provider_model'&&!child?'No executions recorded':'';
+}
+function requestCell(row,item,column,parent){
   switch(column.key){
   case 'time':return tableCell(row,formatRequestTime(item.requested_at),true);
+  case 'trace_id':return tableCell(row,item.trace_id||parent&&parent.trace_id,true);
+  case 'request_endpoint':return tableCell(row,item.request_endpoint||parent&&parent.request_endpoint,true);
+  case 'requested_model':return tableCell(row,item.requested_model||parent&&parent.requested_model,true);
   case 'router_model':return tableCell(row,routerDisplay(item),true);
-  case 'provider_model':case 'provider':case 'source':case 'service_tier':return tableCell(row,item[column.key],true);
+  case 'provider_model':case 'provider':case 'source':case 'credential':return tableCell(row,requestValue(item,column.key,Boolean(parent)),true);
+  case 'service_tier':return tableCell(row,item.service_tier,true);
   case 'result':return statusCell(row,item.result);
   case 'latency':return tableCell(row,formatDuration(item.latency_ns));
   case 'ttft':return tableCell(row,formatDuration(item.ttft_ns));
@@ -105,18 +120,53 @@ function renderGroupTable(){
   document.getElementById('group-prev').disabled=usageState.group.offset<=0;
   document.getElementById('group-next').disabled=usageState.group.offset+usageState.group.limit>=total;
 }
+// Stable across refreshes: the key survives the parent gaining a lifecycle ID unless the trace is ambiguous.
+function requestKey(item){
+  if(item.trace_id)return 'trace:'+item.trace_id+(item.correlation_warning?'|'+(item.lifecycle_request_id||item.sequence||'unassigned'):'');
+  if(item.lifecycle_request_id)return 'lifecycle:'+item.lifecycle_request_id;
+  if(item.router_request_id)return 'router:'+item.router_request_id;
+  return 'sequence:'+item.sequence;
+}
+function requestRow(row,item,columns,options){
+  columns.forEach(column=>requestCell(row,item,column,options.parent));
+  const cell=row.firstElementChild;
+  if(options.ordinal){
+    const label=document.createElement('span');label.className='request-ordinal';label.textContent='Execution '+options.ordinal;cell.prepend(label);
+  }else if(options.controls){
+    const key=requestKey(item),expanded=usageState.expandedRequests.has(key),button=document.createElement('button'),count=document.createElement('span');
+    button.type='button';button.className='request-attempt-toggle';button.dataset.requestToggle=key;
+    button.setAttribute('aria-expanded',String(expanded));button.setAttribute('aria-controls',options.controls.join(' '));
+    button.setAttribute('aria-label',(expanded?'Collapse ':'Expand ')+options.controls.length+' executions for '+(item.trace_id?'trace '+item.trace_id:'request'));
+    button.setAttribute('title',button.getAttribute('aria-label'));button.textContent='›';
+    count.className='request-count';count.textContent=' '+options.controls.length+(options.controls.length===1?' execution':' executions');
+    cell.prepend(button);cell.append(count);
+  }else{
+    const spacer=document.createElement('span');spacer.className='request-attempt-toggle';spacer.setAttribute('aria-hidden','true');cell.prepend(spacer);
+  }
+  if(item.correlation_warning){
+    const warning=document.createElement('div');warning.className='request-warning';warning.setAttribute('role','note');warning.textContent='Correlation warning: '+item.correlation_warning;cell.append(warning);
+  }
+}
 function renderRequestTable(){
   const page=usageState.requestPage;
   const columns=renderTableHeaders(requestColumns,usageState.hiddenRequestColumns,'request-headers','request-table','request',usageState.request.sort,usageState.request.order);
+  const keys=new Set(page&&Array.isArray(page.items)?page.items.map(requestKey):[]);
+  usageState.expandedRequests.forEach(key=>{if(!keys.has(key))usageState.expandedRequests.delete(key)});
+  const focused=document.activeElement&&document.activeElement.dataset.requestToggle;
   const fragment=document.createDocumentFragment();
   if(!page||!Array.isArray(page.items)||page.items.length===0){
     const row=document.createElement('tr'),cell=document.createElement('td');cell.colSpan=columns.length;cell.className='empty-row';cell.textContent='No requests match this range.';row.appendChild(cell);fragment.appendChild(row);
-  }else page.items.forEach(item=>{const row=document.createElement('tr');columns.forEach(column=>requestCell(row,item,column));fragment.appendChild(row)});
+  }else page.items.forEach((item,rowIndex)=>{
+    const attempts=Array.isArray(item.attempts)?item.attempts:[],controls=attempts.length?attempts.map((_,index)=>'request-attempt-'+rowIndex+'-'+index):null;
+    const row=document.createElement('tr');row.className='request-parent-row';requestRow(row,item,columns,{controls});fragment.appendChild(row);
+    if(controls)attempts.forEach((attempt,index)=>{const child=document.createElement('tr');child.id=controls[index];child.className='request-attempt-row';child.hidden=!usageState.expandedRequests.has(requestKey(item));requestRow(child,attempt,columns,{ordinal:index+1,parent:item});fragment.appendChild(child)});
+  });
   replaceTableRows(document.getElementById('usage-requests'),document.getElementById('request-table-scroll'),fragment);
   const total=Number(page&&page.total||0),start=total?usageState.request.offset+1:0,end=Math.min(usageState.request.offset+Number(page&&page.items&&page.items.length||0),total);
   document.getElementById('request-page-status').textContent=start+'–'+end+' of '+formatNumber(total)+' requests';
   document.getElementById('request-prev').disabled=usageState.request.offset<=0;
   document.getElementById('request-next').disabled=usageState.request.offset+usageState.request.limit>=total;
+  if(focused){const button=Array.from(document.querySelectorAll('#usage-requests [data-request-toggle]')).find(element=>element.dataset.requestToggle===focused);if(button)button.focus({preventScroll:true})}
 }
 function renderUsageDashboard(){
   renderUsageSummary();
@@ -156,4 +206,10 @@ function initializeUsageTableEvents() {
   document.getElementById('request-headers').addEventListener('click',sortUsageTable);
   document.getElementById('group-column-options').addEventListener('change',changeColumnVisibility);
   document.getElementById('request-column-options').addEventListener('change',changeColumnVisibility);
+  document.getElementById('usage-requests').addEventListener('click',event=>{
+    const button=event.target.closest('[data-request-toggle]');if(!button)return;
+    const key=button.dataset.requestToggle;
+    if(usageState.expandedRequests.has(key))usageState.expandedRequests.delete(key);else usageState.expandedRequests.add(key);
+    renderRequestTable();
+  });
 }

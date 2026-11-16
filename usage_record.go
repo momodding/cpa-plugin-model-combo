@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
 )
 
 func storedRecordFromUsage(record pluginapi.UsageRecord, attribution attributionResult) storedUsageRecord {
@@ -24,6 +24,10 @@ func storedRecordFromUsage(record pluginapi.UsageRecord, attribution attribution
 		RequestedAt:         requestedAt,
 		Attribution:         attribution.Kind,
 		RouterModel:         attribution.RouterModel,
+		TraceID:             strings.TrimSpace(record.TraceID),
+		RequestID:           strings.TrimSpace(record.RequestID),
+		AuthID:              strings.TrimSpace(record.AuthID),
+		AuthIndex:           strings.TrimSpace(record.AuthIndex),
 		Provider:            strings.TrimSpace(record.Provider),
 		ExecutorType:        strings.TrimSpace(record.ExecutorType),
 		AccountingMode:      accountingMode,

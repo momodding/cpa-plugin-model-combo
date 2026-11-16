@@ -15,6 +15,7 @@ function configurationSnapshot(){
       alias:String(route.alias===undefined||route.alias===null?'':route.alias).trim(),
       strategy:String(route.strategy===undefined||route.strategy===null?'':route.strategy),
       cooldown_seconds:canonicalIntegerDraft(route.cooldown_seconds),
+      allowed_accounts:route.allowed_accounts.slice(),
       targets:(Array.isArray(route.targets)?route.targets:[]).map(target=>({
         model:String(target.model===undefined||target.model===null?'':target.model).trim(),
         weight:canonicalIntegerDraft(target.weight)
@@ -102,26 +103,28 @@ function captureConfigurationBaseline(snapshot=configurationSnapshot()){
   refreshDirty();
 }
 async function loadModelCatalog(){
-  const keyPayload=await requestManagementJSON(API_KEYS_API);
-  const keys=Array.isArray(keyPayload['api-keys'])?keyPayload['api-keys']:[];
-  const clientKey=keys.map(value=>String(value||'').trim()).find(Boolean)||'';
-  return requestCPAJSON(MODELS_API,clientKey);
+  return requestManagementJSON('/v0/management/plugins/model-router/accounts');
 }
-function normalizeModelCatalog(payload,routes){
-  if(!payload||!Array.isArray(payload.data))throw new Error('CPA returned an invalid model catalog.');
-  const aliases=new Set(routes.map(route=>route.alias.trim().toLowerCase()).filter(Boolean));
-  const seen=new Set();
-  const models=[];
-  payload.data.forEach(item=>{
-    const id=item&&typeof item.id==='string'?item.id.trim():'';
-    const owner=item&&typeof item.owned_by==='string'?item.owned_by.trim().toLowerCase():'';
-    if(!id||owner==='model-router'||aliases.has(id.toLowerCase())||seen.has(id))return;
-    seen.add(id);
-    models.push(id);
+function normalizeModelCatalog(payload){
+  if(!payload||!Array.isArray(payload.credentials))throw new Error('CPA returned an invalid account catalog.');
+  return payload.credentials.filter(account=>account&&typeof account.id==='string'&&account.id&&Array.isArray(account.models));
+}
+function modelsForRoute(route){
+  const selected=new Set(route.allowed_accounts);
+  const models=new Map();
+  (state.accounts||[]).forEach(account=>{
+    if(account.disabled||(selected.size&&!selected.has(account.id)))return;
+    account.models.forEach(model=>{
+      if(!model||typeof model.id!=='string'||!model.id.trim())return;
+      const id=model.id.trim();
+      if(!models.has(id)||models.get(id)==='unknown')models.set(id,model.entitlement||'unknown');
+    });
   });
-  models.sort((left,right)=>left.localeCompare(right));
-  if(models.length===0)throw new Error('CPA returned no selectable models.');
   return models;
+}
+function catalogHasModel(models,value){
+  const base=value.replace(/\([^()]+\)$/,'').trim();
+  return models.has(value)||models.has(base);
 }
 function updateModelStatus(){
   if(state.catalogError){
@@ -151,6 +154,7 @@ function normalizeRoute(value,index){
     alias:String(route.alias||('route-'+(index+1))),
     strategy:route.strategy==='round-robin'?'round-robin':'priority',
     cooldown_seconds:String(cooldown),
+    allowed_accounts:Array.isArray(route.allowed_accounts)?route.allowed_accounts.slice():[],
     targets
   };
 }
@@ -158,6 +162,7 @@ async function loadConfiguration(){
   setBusy(true);
   setAuthNote('Loading configuration…');
   state.availableModels=[];
+  state.accounts=[];
   state.catalogLoaded=false;
   state.catalogError='';
   updateModelStatus();
@@ -174,7 +179,8 @@ async function loadConfiguration(){
     state.routes=source.map(normalizeRoute);
     if(catalogResult.status==='fulfilled'){
       try{
-        state.availableModels=normalizeModelCatalog(catalogResult.value,state.routes);
+        state.accounts=normalizeModelCatalog(catalogResult.value);
+        state.availableModels=Array.from(modelsForRoute({allowed_accounts:[]}).keys()).sort((a,b)=>a.localeCompare(b));
         state.catalogLoaded=true;
       }catch(error){state.catalogError=error.message}
     }else state.catalogError=catalogResult.reason.message||'CPA models could not be loaded.';
@@ -193,7 +199,7 @@ async function loadConfiguration(){
     showToast(error.message,'error');
   }finally{setBusy(false)}
 }
-function createTargetRow(target,targetIndex,targetCount,weighted){
+function createTargetRow(target,targetIndex,targetCount,weighted,route){
   const row=document.getElementById('target-template').content.firstElementChild.cloneNode(true);
   row.dataset.targetIndex=String(targetIndex);
   row.querySelector('.target-number').textContent=String(targetIndex+1).padStart(2,'0');
@@ -210,21 +216,25 @@ function createTargetRow(target,targetIndex,targetCount,weighted){
   placeholder.disabled=true;
   placeholder.selected=!model;
   select.appendChild(placeholder);
-  const available=new Set(state.availableModels);
+  const modelCatalog=modelsForRoute(route);
+  const available=new Set(modelCatalog.keys());
   if(model&&!available.has(model)){
     const unavailable=document.createElement('option');
     unavailable.value=model;
-    unavailable.textContent=model+' (unavailable)';
-    unavailable.disabled=true;
+    const supported=catalogHasModel(available,model);
+    unavailable.textContent=model+(supported?'':' (unavailable)');
+    unavailable.disabled=!supported;
     unavailable.selected=true;
     select.appendChild(unavailable);
-    select.title='This configured model is not currently available in CPA. Choose a live model to replace it.';
-    row.dataset.modelAvailability='unavailable';
+    if(!supported){
+      select.title='This configured model is not currently available in CPA. Choose a live model to replace it.';
+      row.dataset.modelAvailability='unavailable';
+    }
   }
-  state.availableModels.forEach(availableModel=>{
+  Array.from(modelCatalog.keys()).sort((a,b)=>a.localeCompare(b)).forEach(availableModel=>{
     const option=document.createElement('option');
     option.value=availableModel;
-    option.textContent=availableModel;
+    option.textContent=availableModel+(modelCatalog.get(availableModel)==='unknown'?' (entitlement unknown)':'');
     select.appendChild(option);
   });
   if(model&&available.has(model))select.value=model;
@@ -249,13 +259,60 @@ function createRouteCard(route,index){
   const weighted=route.strategy==='round-robin';
   card.querySelector('[data-target-help]').hidden=!weighted;
   card.querySelector('.preview-targets').textContent=route.targets.length+(route.targets.length===1?' target':' targets');
+  const accounts=document.createElement('fieldset');
+  const legend=document.createElement('legend');
+  legend.textContent='Allowed accounts';
+  accounts.appendChild(legend);
+  const help=document.createElement('small');
+  help.textContent='No accounts selected: all accounts allowed. Selected accounts are tried in the order they were chosen.';
+  accounts.appendChild(help);
+  const groups=new Map();
+  (state.accounts||[]).forEach(account=>{
+    const provider=account.provider||'Unknown provider';
+    if(!groups.has(provider))groups.set(provider,[]);
+    groups.get(provider).push(account);
+  });
+  const known=new Set((state.accounts||[]).map(account=>account.id));
+  const stale=route.allowed_accounts.filter(id=>!known.has(id));
+  if(stale.length)groups.set('Unavailable accounts',stale.map(id=>({id,label:id,disabled:true})));
+  groups.forEach((items,provider)=>{
+    const group=document.createElement('div');
+    const heading=document.createElement('strong');
+    heading.textContent=provider;
+    group.appendChild(heading);
+    items.forEach(account=>{
+      const label=document.createElement('label');
+      label.style.display='block';
+      const checkbox=document.createElement('input');
+      checkbox.type='checkbox';
+      checkbox.dataset.accountId=account.id;
+      checkbox.checked=route.allowed_accounts.includes(account.id);
+      checkbox.disabled=Boolean(account.disabled)&&!checkbox.checked;
+      label.appendChild(checkbox);
+      label.appendChild(document.createTextNode(' '+(account.label||account.id)+' ('+account.id+')'+(account.disabled?' (unavailable)':'')));
+      if(account.models){
+        const details=document.createElement('small');
+        details.style.display='block';
+        details.textContent=account.models.length?account.models.map(model=>model.id+' ('+(model.entitlement||'unknown')+')').join(', '):'No registered models';
+        label.appendChild(details);
+      }
+      group.appendChild(label);
+    });
+    accounts.appendChild(group);
+  });
+  if(!state.catalogLoaded){
+    const message=document.createElement('small');
+    message.textContent=state.catalogError||'Loading accounts…';
+    accounts.appendChild(message);
+  }
+  card.querySelector('.targets').before(accounts);
   const targetList=card.querySelector('.target-list');
   if(route.targets.length===0){
     const empty=document.createElement('div');
     empty.className='target-empty';
     empty.textContent='A route needs at least one model target.';
     targetList.appendChild(empty);
-  }else route.targets.forEach((target,targetIndex)=>targetList.appendChild(createTargetRow(target,targetIndex,route.targets.length,weighted)));
+  }else route.targets.forEach((target,targetIndex)=>targetList.appendChild(createTargetRow(target,targetIndex,route.targets.length,weighted,route)));
   return card;
 }
 function routeCardsInOrder(){return Array.from(routesEl.children).filter(child=>child.classList&&child.classList.contains('route-card'))}
@@ -337,7 +394,7 @@ function renderRoutes(){
     window.scrollTo(scrollX,scrollY);
   }
 }
-function newRoute(){return{alias:'route-'+(state.routes.length+1),strategy:'priority',cooldown_seconds:'60',targets:[{model:'',weight:'1'}]}}
+function newRoute(){return{alias:'route-'+(state.routes.length+1),strategy:'priority',cooldown_seconds:'60',allowed_accounts:[],targets:[{model:'',weight:'1'}]}}
 function addRoute(){state.routes.push(newRoute());renderRoutes();refreshDirty()}
 function routeIndexFrom(target){
   const card=target.closest('.route-card');
@@ -373,11 +430,21 @@ function updateFromInput(target){
   const index=routeIndexFrom(target);
   if(index<0||!state.routes[index])return;
   const route=state.routes[index];
+  if(target.dataset.accountId){
+    const id=target.dataset.accountId;
+    if(target.checked&&!route.allowed_accounts.includes(id))route.allowed_accounts.push(id);
+    else if(!target.checked)route.allowed_accounts=route.allowed_accounts.filter(value=>value!==id);
+    const card=target.closest('.route-card');
+    const list=card.querySelector('.target-list');
+    if(route.targets.length)list.replaceChildren(...route.targets.map((item,i)=>createTargetRow(item,i,route.targets.length,route.strategy==='round-robin',route)));
+    refreshDirty();
+    return;
+  }
   const targetRow=target.closest('.target-row');
   if(targetRow&&target.dataset.targetField){
     const targetIndex=Number.parseInt(targetRow.dataset.targetIndex,10);
     if(targetIndex>=0)route.targets[targetIndex][target.dataset.targetField]=target.value;
-    if(target.dataset.targetField==='model'&&state.availableModels.includes(target.value)){
+    if(target.dataset.targetField==='model'&&catalogHasModel(modelsForRoute(route),target.value)){
       delete targetRow.dataset.modelAvailability;
       target.removeAttribute('title');
     }
@@ -411,6 +478,7 @@ function serializeRoutes(){
     alias:route.alias.trim(),
     strategy:route.strategy,
     cooldown_seconds:integerDraftValue(route.cooldown_seconds),
+    allowed_accounts:route.allowed_accounts.slice(),
     targets:route.targets.map(target=>({model:target.model.trim(),weight:integerDraftValue(target.weight)}))
   }));
 }
@@ -431,11 +499,19 @@ function validateClient(routes){
     if(route.strategy!=='priority'&&route.strategy!=='round-robin')errors.push(label+': choose a strategy.');
     if(!Number.isInteger(route.cooldown_seconds)||route.cooldown_seconds<0)errors.push(label+': cooldown must be a non-negative integer.');
     if(route.targets.length===0)errors.push(label+': add at least one target.');
+    if(!state.catalogLoaded)errors.push(label+': account catalog is unavailable; reload before saving.');
+    const accounts=new Map((state.accounts||[]).map(account=>[account.id,account]));
+    route.allowed_accounts.forEach(id=>{
+      if(!accounts.has(id)||accounts.get(id).disabled)errors.push(label+': remove unavailable account '+id+'.');
+      else if(!route.targets.some(target=>catalogHasModel(new Set(accounts.get(id).models.map(model=>model.id)),target.model)))errors.push(label+': account '+id+' does not support any route target.');
+    });
+    const available=modelsForRoute(route);
     const models=new Map();
     route.targets.forEach((target,targetIndex)=>{
       const model=target.model;
       const modelKey=model.toLowerCase();
       if(!model)errors.push(label+', target '+(targetIndex+1)+': model is required.');
+      else if(state.catalogLoaded&&!catalogHasModel(available,model))errors.push(label+', target '+(targetIndex+1)+': model is not available from the selected accounts.');
       else if(!Number.isInteger(target.weight)||target.weight<1||target.weight>1000000)errors.push(label+', target '+(targetIndex+1)+': weight must be an integer from 1 to 1000000.');
       else if(models.has(modelKey))errors.push(label+', target '+(targetIndex+1)+': model duplicates target '+models.get(modelKey)+'.');
       else models.set(modelKey,targetIndex+1);

@@ -2,14 +2,15 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"path/filepath"
 	"strings"
 	"testing"
 
-	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginabi"
-	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginabi"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
 )
 
 func TestModelRouterABIAdvertisesConfigurationResource(t *testing.T) {
@@ -37,6 +38,7 @@ func TestModelRouterABIAdvertisesConfigurationResource(t *testing.T) {
 		t.Fatalf("resources = %#v", management.Resources)
 	}
 	wantedRoutes := map[string]bool{
+		http.MethodGet + " /plugins/model-router/accounts":           false,
 		http.MethodPost + " /plugins/model-router/validate":          false,
 		http.MethodGet + " /plugins/model-router/usage/dashboard":    false,
 		http.MethodGet + " /plugins/model-router/usage/overview":     false,
@@ -90,8 +92,7 @@ func TestModelRouterManagementDashboardReusesCPAMCSessionAndTheme(t *testing.T) 
 		"<title>Model Router</title>",
 		"/v0/management/plugins/model-router/config",
 		"/v0/management/plugins/model-router/validate",
-		"/v0/management/api-keys",
-		"/v1/models",
+		"/v0/management/plugins/model-router/accounts",
 		"headers.Authorization='Bearer '+key",
 		"'cli-proxy-auth'",
 		"CPA_STORAGE_PREFIX='enc::v2::'",
@@ -103,7 +104,7 @@ func TestModelRouterManagementDashboardReusesCPAMCSessionAndTheme(t *testing.T) 
 		"<select data-target-field=\"model\"",
 		"data-target-field=\"weight\"",
 		"data-target-help",
-		"model+' (unavailable)'",
+		"unavailable.textContent=model+(supported?'':' (unavailable)')",
 		"data-action=\"add-target\"",
 		"role=\"tablist\" aria-label=\"Model Router sections\"",
 		"id=\"configuration-tab\" class=\"page-tab\" type=\"button\" role=\"tab\" aria-selected=\"true\"",
@@ -203,7 +204,7 @@ func TestModelRouterManagementDashboardReusesCPAMCSessionAndTheme(t *testing.T) 
 			t.Fatalf("dashboard missing async pricing guard %q", required)
 		}
 	}
-	for _, forbidden := range []string{"http://", "https://", "innerHTML", "<input type=\"text\" data-target-field=\"model\"", "setDirty(true)"} {
+	for _, forbidden := range []string{"http://", "https://", "innerHTML", "<input type=\"text\" data-target-field=\"model\"", "setDirty(true)", "/v0/management/api-keys", "/v1/models"} {
 		if strings.Contains(page, forbidden) {
 			t.Fatalf("dashboard contains forbidden text %q", forbidden)
 		}
@@ -343,5 +344,59 @@ func TestManagementStrictJSONContracts(t *testing.T) {
 				})
 			}
 		})
+	}
+}
+
+func TestModelRouterManagementAccountCatalogAndRestrictedValidation(t *testing.T) {
+	plugin := testRouterPlugin()
+	plugin.credentials = &credentialSnapshots{}
+	host := &fakeCatalogHost{
+		models: []pluginapi.HostAuthModels{
+			{ID: "a.json", Provider: "codex", Models: []string{"gpt-5"}},
+			{ID: "b.json", Provider: "claude", Models: []string{"claude-x"}},
+			{ID: "off.json", Provider: "codex", Models: []string{"gpt-5"}},
+		},
+		files: []pluginapi.HostAuthFileEntry{{ID: "off.json", Disabled: true}},
+	}
+	catalog := handleModelRouterManagementWithHost(plugin, pluginapi.ManagementRequest{Method: http.MethodGet, Path: modelRouterAccountsPath}, host)
+	if catalog.StatusCode != http.StatusOK || !strings.Contains(string(catalog.Body), `"credentials"`) || !strings.Contains(string(catalog.Body), `"a.json"`) {
+		t.Fatalf("catalog = %d %s", catalog.StatusCode, catalog.Body)
+	}
+	for _, test := range []struct {
+		name, body, field string
+		status            int
+	}{
+		{"valid", `{"routes":[{"alias":"auto","models":["gpt-5(high)","claude-x"],"allowed_accounts":["a.json","b.json"]}]}`, "", http.StatusOK},
+		{"unrestricted skips catalog", `{"routes":[{"alias":"auto","models":["missing"],"allowed_accounts":[]}]}`, "", http.StatusOK},
+		{"unknown account", `{"routes":[{"alias":"auto","models":["gpt-5"],"allowed_accounts":["gone.json"]}]}`, "routes[0].allowed_accounts[0]", http.StatusBadRequest},
+		{"disabled account", `{"routes":[{"alias":"auto","models":["gpt-5"],"allowed_accounts":["off.json"]}]}`, "routes[0].allowed_accounts[0]", http.StatusBadRequest},
+		{"account without target", `{"routes":[{"alias":"auto","models":["gpt-5"],"allowed_accounts":["a.json","b.json"]}]}`, "routes[0].allowed_accounts[1]", http.StatusBadRequest},
+		{"target without account", `{"routes":[{"alias":"auto","targets":[{"model":"gpt-5"},{"model":"claude-x"}],"allowed_accounts":["a.json"]}]}`, "routes[0].targets[1]", http.StatusBadRequest},
+		{"blank account", `{"routes":[{"alias":"auto","models":["gpt-5"],"allowed_accounts":[" "]}]}`, "", http.StatusBadRequest},
+		{"non-string account", `{"routes":[{"alias":"x","models":["gpt-5"]},{"alias":"auto","models":["gpt-5"],"allowed_accounts":["a.json",1]}]}`, "routes[1].allowed_accounts[1]", http.StatusBadRequest},
+		{"non-array accounts", `{"routes":[{"alias":"auto","models":["gpt-5"],"allowed_accounts":"a.json"}]}`, "routes[0].allowed_accounts", http.StatusBadRequest},
+		{"boolean account", `{"routes":[{"alias":"auto","models":["gpt-5"],"allowed_accounts":[true]}]}`, "routes[0].allowed_accounts[0]", http.StatusBadRequest},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			response := handleModelRouterManagementWithHost(plugin, pluginapi.ManagementRequest{Method: http.MethodPost, Path: modelRouterValidationPath, Body: []byte(test.body)}, host)
+			if response.StatusCode != test.status || (test.field != "" && !strings.Contains(string(response.Body), `"field":"`+test.field+`"`)) {
+				t.Fatalf("status=%d body=%s", response.StatusCode, response.Body)
+			}
+		})
+	}
+	restricted := `{"routes":[{"alias":"auto","models":["gpt-5"],"allowed_accounts":["a.json"]}]}`
+	for name, unavailable := range map[string]modelHost{
+		"callback failure": &fakeCatalogHost{modelsErr: errors.New("sk-secret")},
+		"no callback":      nil,
+	} {
+		for path, request := range map[string]pluginapi.ManagementRequest{
+			"validate": {Method: http.MethodPost, Path: modelRouterValidationPath, Body: []byte(restricted)},
+			"accounts": {Method: http.MethodGet, Path: modelRouterAccountsPath},
+		} {
+			response := handleModelRouterManagementWithHost(plugin, request, unavailable)
+			if response.StatusCode != http.StatusServiceUnavailable || strings.Contains(string(response.Body), "sk-secret") {
+				t.Fatalf("%s %s: status=%d body=%s", name, path, response.StatusCode, response.Body)
+			}
+		}
 	}
 }

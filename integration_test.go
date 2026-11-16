@@ -227,7 +227,7 @@ openai-compatibility:
 		t.Fatalf("cache-creation fixture was not served; calls=%d models=%v", creationCalls.Load(), observedModels)
 	}
 
-	page := waitForSmokeUsage(t, baseURL, usageStart, 6, 10*time.Second)
+	page := waitForSmokeUsage(t, baseURL, usageStart, 5, 6, 10*time.Second)
 	var dashboard usageDashboard
 	dashboardPath := modelRouterUsageBasePath + "/dashboard?" + url.Values{
 		"from": {usageStart.Format(time.RFC3339Nano)}, "to": {time.Now().UTC().Format(time.RFC3339Nano)},
@@ -236,7 +236,7 @@ openai-compatibility:
 	if err := requestSmokeManagementJSON(baseURL, dashboardPath, &dashboard); err != nil {
 		t.Fatal(err)
 	}
-	if dashboard.Overview.Summary.Requests != 6 || dashboard.Requests.Total != 6 || len(dashboard.Requests.Items) != 2 || dashboard.Groups.Dimension != "router_model" || dashboard.GeneratedAt != dashboard.Requests.GeneratedAt {
+	if dashboard.Overview.Summary.Requests != 6 || dashboard.Requests.Total != 5 || len(dashboard.Requests.Items) != 2 || dashboard.Groups.Dimension != "router_model" || dashboard.GeneratedAt != dashboard.Requests.GeneratedAt {
 		t.Fatalf("combined usage snapshot = %#v", dashboard)
 	}
 	unauthenticated, err := http.Get(baseURL + dashboardPath)
@@ -253,31 +253,36 @@ openai-compatibility:
 	totalTokens := uint64(0)
 	cacheCreationTokens := uint64(0)
 	for _, item := range page.Items {
-		totalTokens += item.TotalTokens
-		cacheCreationTokens += item.CacheCreationTokens
-		switch item.Attribution {
-		case attributionRouted:
-			if item.RouterModel == "smoke-router-alias" && item.ProviderModel != "" {
-				routedModel = item.ProviderModel
+		for _, attempt := range item.Attempts {
+			if attempt.TraceID == "" || attempt.TraceID != item.TraceID {
+				t.Fatalf("execution trace %q does not match parent trace %q", attempt.TraceID, item.TraceID)
 			}
-			if item.Failed {
-				routedFailures++
-			} else {
-				routedSuccesses++
-			}
-		case attributionDirect:
-			if item.RouterModel == "" && item.ProviderModel != "" {
-				foundDirect = true
-			}
-			if !item.Failed {
-				directSuccesses++
+			totalTokens += attempt.TotalTokens
+			cacheCreationTokens += attempt.CacheCreationTokens
+			switch attempt.Attribution {
+			case attributionRouted:
+				if attempt.RouterModel == "smoke-router-alias" && attempt.ProviderModel != "" {
+					routedModel = attempt.ProviderModel
+				}
+				if attempt.Failed {
+					routedFailures++
+				} else {
+					routedSuccesses++
+				}
+			case attributionDirect:
+				if attempt.RouterModel == "" && attempt.ProviderModel != "" {
+					foundDirect = true
+				}
+				if !attempt.Failed {
+					directSuccesses++
+				}
 			}
 		}
 	}
 	if routedModel == "" || !foundDirect {
 		t.Fatalf("usage records do not distinguish routed and direct calls: %#v\n%s", page.Items, logs.String())
 	}
-	if page.Total != 6 || routedSuccesses != 3 || routedFailures != 1 || directSuccesses != 2 || totalTokens != 14 || cacheCreationTokens != 2 {
+	if page.Total != 5 || routedSuccesses != 3 || routedFailures != 1 || directSuccesses != 2 || totalTokens != 14 || cacheCreationTokens != 2 {
 		t.Fatalf("usage records were missing, duplicated, or lost cache creation: total=%d routed_success=%d routed_failure=%d direct_success=%d tokens=%d cache_creation=%d items=%#v\n%s", page.Total, routedSuccesses, routedFailures, directSuccesses, totalTokens, cacheCreationTokens, page.Items, logs.String())
 	}
 
@@ -302,7 +307,7 @@ openai-compatibility:
 	if !waitForSmokeModel(t, baseURL, "smoke-router-alias", 10*time.Second) {
 		t.Fatalf("model route alias was not restored after restart\n%s", logs.String())
 	}
-	restartedPage := waitForSmokeUsage(t, baseURL, usageStart, page.Total, 10*time.Second)
+	restartedPage := waitForSmokeUsage(t, baseURL, usageStart, page.Total, 6, 10*time.Second)
 	if restartedPage.Total < page.Total {
 		t.Fatalf("usage records were lost across restart: before=%d after=%d\n%s", page.Total, restartedPage.Total, logs.String())
 	}
@@ -1232,7 +1237,7 @@ func verifyModelRouterManagementUI(t *testing.T, baseURL string, logs *smokeSync
 	if resourceResponse.StatusCode != http.StatusOK || !strings.Contains(string(resourceBody), "<title>Model Router</title>") {
 		t.Fatalf("dashboard status=%s body=%q", resourceResponse.Status, resourceBody)
 	}
-	for _, expected := range []string{"/v0/management/api-keys", "/v1/models", "<select data-target-field=\"model\"", "data-target-field=\"weight\"", "data-target-help"} {
+	for _, expected := range []string{"/v0/management/plugins/model-router/accounts", "<select data-target-field=\"model\"", "data-target-field=\"weight\"", "data-target-help"} {
 		if !strings.Contains(string(resourceBody), expected) {
 			t.Fatalf("dashboard missing %q", expected)
 		}
@@ -1408,7 +1413,7 @@ func putSmokeManagementJSON[Input, Output any](t *testing.T, baseURL, path strin
 	return result
 }
 
-func waitForSmokeUsage(t *testing.T, baseURL string, from time.Time, minimumTotal int, timeout time.Duration) usageRequestPage {
+func waitForSmokeUsage(t *testing.T, baseURL string, from time.Time, minimumTotal, minimumAttempts int, timeout time.Duration) usageRequestPage {
 	t.Helper()
 	deadline := time.Now().Add(timeout)
 	var lastPage usageRequestPage
@@ -1424,11 +1429,13 @@ func waitForSmokeUsage(t *testing.T, baseURL string, from time.Time, minimumTota
 		if lastErr == nil {
 			lastPage = page
 			foundRouted, foundDirect := false, false
+			attempts := 0
 			for _, item := range lastPage.Items {
+				attempts += len(item.Attempts)
 				foundRouted = foundRouted || item.Attribution == attributionRouted && item.RouterModel == "smoke-router-alias"
 				foundDirect = foundDirect || item.Attribution == attributionDirect && item.RouterModel == ""
 			}
-			if foundRouted && foundDirect && lastPage.Total >= minimumTotal {
+			if foundRouted && foundDirect && lastPage.Total >= minimumTotal && attempts >= minimumAttempts {
 				return lastPage
 			}
 		}
@@ -1453,8 +1460,8 @@ func TestWaitForSmokeUsageDoesNotReuseOmittedRouterModel(t *testing.T) {
 			page = usageRequestPage{
 				Total: 6,
 				Items: []usageRequestDetail{
-					{storedUsageRecord: storedUsageRecord{Attribution: attributionDirect}},
-					{storedUsageRecord: storedUsageRecord{Attribution: attributionRouted, RouterModel: "smoke-router-alias"}},
+					{storedUsageRecord: storedUsageRecord{Attribution: attributionDirect}, Attempts: make([]usageRequestDetail, 3)},
+					{storedUsageRecord: storedUsageRecord{Attribution: attributionRouted, RouterModel: "smoke-router-alias"}, Attempts: make([]usageRequestDetail, 3)},
 				},
 			}
 		}
@@ -1464,7 +1471,7 @@ func TestWaitForSmokeUsageDoesNotReuseOmittedRouterModel(t *testing.T) {
 	}))
 	defer server.Close()
 
-	page := waitForSmokeUsage(t, server.URL, time.Now().UTC().Add(-time.Second), 6, time.Second)
+	page := waitForSmokeUsage(t, server.URL, time.Now().UTC().Add(-time.Second), 6, 6, time.Second)
 	if polls.Load() < 2 || page.Total != 6 || page.Items[0].Attribution != attributionDirect || page.Items[0].RouterModel != "" {
 		t.Fatalf("direct usage row retained a prior router model: polls=%d page=%#v", polls.Load(), page)
 	}

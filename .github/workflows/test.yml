@@ -15,11 +15,11 @@ jobs:
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
-      - name: Check out minimum supported CPA v7.3.9
+      - name: Check out minimum supported CPA v8.0.37
         uses: actions/checkout@v7
         with:
           repository: router-for-me/CLIProxyAPI
-          ref: 61fdfc341b96178a8dcb53f2efc46cbc341d267c
+          ref: ce07d189b3de2a39d37fd68ae093b102ce3aabee
           path: .cpa-source
           persist-credentials: false
       - uses: actions/setup-go@v7
@@ -63,9 +63,117 @@ jobs:
       - name: Test minimum supported CPA integration
         run: CPA_SOURCE="$GITHUB_WORKSPACE/.cpa-source" go test -tags=integration ./... -count=1
       - name: Build native plugin
+        if: ${{ !cancelled() }}
         run: |
           mkdir -p dist
           CGO_ENABLED=1 go build -trimpath -buildmode=c-shared -o dist/model-router.so .
+      - name: Install browser test dependencies
+        if: ${{ !cancelled() }}
+        run: npm ci
+      - name: Test dashboard in a disposable CPA instance
+        if: ${{ !cancelled() }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 077
+          fixture="$(mktemp -d "$RUNNER_TEMP/dashboard-e2e.XXXXXX")"
+          cpa_pid=""
+          # shellcheck disable=SC2329 # Invoked by the EXIT trap.
+          cleanup() {
+            if [[ -n "$cpa_pid" ]]; then
+              kill "$cpa_pid" 2>/dev/null || true
+              for _ in {1..50}; do kill -0 "$cpa_pid" 2>/dev/null || break; sleep 0.1; done
+              kill -9 "$cpa_pid" 2>/dev/null || true
+              wait "$cpa_pid" 2>/dev/null || true
+            fi
+            rm -rf -- "$fixture"
+          }
+          trap cleanup EXIT
+          mkdir -p "$fixture/plugins" "$fixture/auth"
+          cp dist/model-router.so "$fixture/plugins/model-router.so"
+          (cd .cpa-source && go build -o "$fixture/cli-proxy-api" ./cmd/server)
+          port="$(python3 -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1]); s.close()')"
+          cat > "$fixture/config.yaml" <<EOF
+          host: "127.0.0.1"
+          port: $port
+          auth-dir: "$fixture/auth"
+          api-keys: ["dashboard-e2e-client-key"]
+          request-retry: 0
+          usage-statistics-enabled: true
+          remote-management:
+            allow-remote: false
+            secret-key: "dashboard-e2e-management-key"
+            disable-control-panel: true
+          plugins:
+            enabled: true
+            dir: "$fixture/plugins"
+            configs:
+              model-router:
+                enabled: true
+                routes: []
+          openai-compatibility:
+            - name: dashboard-e2e
+              base-url: "http://127.0.0.1:9/v1"
+              api-key-entries:
+                - api-key: dashboard-e2e-fake-provider-key
+              models:
+                - name: dashboard-e2e-model-a
+                - name: dashboard-e2e-model-b
+          EOF
+          "$fixture/cli-proxy-api" --config "$fixture/config.yaml" > "$fixture/cpa.log" 2>&1 &
+          cpa_pid=$!
+          base_url="http://127.0.0.1:$port"
+          ready=false
+          for _ in {1..100}; do
+            if curl --fail --silent --max-time 1 -H 'Authorization: Bearer dashboard-e2e-management-key' \
+              "$base_url/v0/management/plugins/model-router/accounts" > "$fixture/accounts.json" && \
+              jq -e '[.credentials[].models[].id] | (index("dashboard-e2e-model-a") != null and index("dashboard-e2e-model-b") != null)' "$fixture/accounts.json" > /dev/null; then
+              ready=true
+              break
+            fi
+            if ! kill -0 "$cpa_pid" 2>/dev/null; then break; fi
+            sleep 0.2
+          done
+          if [[ "$ready" != true ]]; then
+            echo 'Disposable CPA did not become ready with both fixture models' >&2
+            cat "$fixture/cpa.log" >&2
+            exit 1
+          fi
+          export DASHBOARD_URL="$base_url/v0/resource/plugins/model-router/config"
+          export DASHBOARD_MANAGEMENT_KEY=dashboard-e2e-management-key
+          export DASHBOARD_E2E_ALLOW_MUTATIONS=1
+          export PLAYWRIGHT_CHROMIUM_EXECUTABLE=/usr/bin/google-chrome
+          status=0
+          npm run test:e2e || status=$?
+          # Best effort: the final state of the disposable instance, captured while it is still running.
+          export DASHBOARD_E2E_SCREENSHOTS="$RUNNER_TEMP/dashboard-e2e-screenshots"
+          mkdir -p "$DASHBOARD_E2E_SCREENSHOTS"
+          node --input-type=module <<'JS' || echo '::warning::dashboard screenshots were not captured'
+          import { chromium } from 'playwright-core';
+          const browser = await chromium.launch({ executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE, headless: true, args: ['--no-sandbox', '--disable-setuid-sandbox'] });
+          try {
+            const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
+            await page.goto(process.env.DASHBOARD_URL, { waitUntil: 'domcontentloaded' });
+            await page.locator('#management-key').fill(process.env.DASHBOARD_MANAGEMENT_KEY);
+            await page.locator('#connect').click();
+            await page.locator('#model-status[data-tone="ready"]').waitFor();
+            await page.screenshot({ path: `${process.env.DASHBOARD_E2E_SCREENSHOTS}/configuration.png`, fullPage: true });
+            await page.getByRole('tab', { name: 'Usage tracking' }).click();
+            await page.locator('#usage-panel').waitFor({ state: 'visible' });
+            await page.screenshot({ path: `${process.env.DASHBOARD_E2E_SCREENSHOTS}/usage.png`, fullPage: true });
+          } finally {
+            await browser.close();
+          }
+          JS
+          exit "$status"
+      - name: Upload dashboard screenshots
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: dashboard-e2e-screenshots
+          path: ${{ runner.temp }}/dashboard-e2e-screenshots/*.png
+          if-no-files-found: ignore
+          retention-days: 7
 
   windows-sqlite:
     runs-on: windows-latest

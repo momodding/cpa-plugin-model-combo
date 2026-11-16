@@ -20,7 +20,7 @@ import (
 	"time"
 
 	"github.com/mattn/go-sqlite3"
-	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
 )
 
 func TestSQLiteDSNPaths(t *testing.T) {
@@ -256,6 +256,150 @@ func TestUsageStorePersistsAndResetPreservesSettings(t *testing.T) {
 	}
 	if loaded, _ := store.QueryPreferences(); loaded.RequestPageSize != 50 || !slices.Equal(loaded.HiddenGroupColumns, preferences.HiddenGroupColumns) {
 		t.Fatalf("preferences after reset = %#v", loaded)
+	}
+}
+
+func TestUsageStoreMigratesSchemaV1ToV2(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "usage.db")
+	database, err := sql.Open("sqlite3", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC().Add(-time.Minute)
+	payload, err := json.Marshal(storedUsageRecord{Sequence: 7, RequestedAt: now, Attribution: attributionDirect, ProviderModel: "v1-model", TotalTokens: 3})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, statement := range []string{
+		`CREATE TABLE store_state (id INTEGER PRIMARY KEY CHECK (id = 1), storage_schema_version INTEGER NOT NULL, next_sequence INTEGER NOT NULL DEFAULT 0, last_prune_day TEXT, prices_json BLOB, preferences_json BLOB)`,
+		`CREATE TABLE requests (sequence INTEGER PRIMARY KEY, requested_at_ns INTEGER NOT NULL, payload BLOB NOT NULL)`,
+		`CREATE INDEX requests_requested_at_sequence ON requests(requested_at_ns, sequence)`,
+		`CREATE TABLE minute_aggregates (key BLOB PRIMARY KEY, minute_ns INTEGER NOT NULL, payload BLOB NOT NULL)`,
+		`CREATE INDEX minute_aggregates_minute ON minute_aggregates(minute_ns)`,
+	} {
+		if _, err := database.Exec(statement); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := database.Exec(`INSERT INTO store_state(id, storage_schema_version, next_sequence, prices_json, preferences_json) VALUES (1, 1, 7, ?, ?)`, []byte(`{"prices":"kept"}`), []byte(`{"prefs":"kept"}`)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.Exec(`INSERT INTO requests(sequence, requested_at_ns, payload) VALUES (7, ?, ?)`, now.UnixNano(), payload); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	store, err := openUsageStore(path, 365)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	var version, sequence int
+	var prices, preferences []byte
+	if err := store.db.QueryRow(`SELECT storage_schema_version, next_sequence, prices_json, preferences_json FROM store_state WHERE id = 1`).Scan(&version, &sequence, &prices, &preferences); err != nil {
+		t.Fatal(err)
+	}
+	if version != 2 || sequence != 7 || string(prices) != `{"prices":"kept"}` || string(preferences) != `{"prefs":"kept"}` {
+		t.Fatalf("migrated state = %d/%d/%s/%s", version, sequence, prices, preferences)
+	}
+	var stored []byte
+	if err := store.db.QueryRow(`SELECT payload FROM requests WHERE sequence = 7`).Scan(&stored); err != nil || !bytes.Equal(stored, payload) {
+		t.Fatalf("migrated request = %s, %v", stored, err)
+	}
+	if err := store.RecordSession(storedRequestSession{TraceID: "t", LifecycleRequestID: "l", StartedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	// Reopening a v2 database must not repeat the migration or lose sessions.
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := openUsageStore(path, 365)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = reopened.Close() })
+	if sessions := readTestSessions(t, reopened); len(sessions) != 1 || sessions[0].TraceID != "t" {
+		t.Fatalf("sessions after reopen = %#v", sessions)
+	}
+}
+
+func readTestSessions(t *testing.T, store *usageStore) []storedRequestSession {
+	t.Helper()
+	var sessions []storedRequestSession
+	if err := store.readSnapshot(func(connection *sql.Conn, _ int) error {
+		return scanRequestSessions(connection, func(session storedRequestSession) { sessions = append(sessions, session) })
+	}); err != nil {
+		t.Fatal(err)
+	}
+	return sessions
+}
+
+func TestUsageStoreRequestSessionUpsertCollisionRetentionAndReset(t *testing.T) {
+	store, err := openUsageStore(filepath.Join(t.TempDir(), "usage.db"), 30)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	now := time.Now().UTC().Add(-time.Minute)
+	start := storedRequestSession{TraceID: "1234", LifecycleRequestID: "a", RequestEndpoint: "POST /v1/chat/completions", RequestedModel: "auto", RouterModel: "auto", Stream: true, StartedAt: now}
+	done := storedRequestSession{TraceID: "1234", LifecycleRequestID: "a", StartedAt: now.Add(time.Second), CompletedAt: now.Add(time.Second), Outcome: "success", HTTPStatus: 200, Latency: time.Second}
+	// Completion first, then a late start must not erase it.
+	if found, err := store.CompleteSession(done); err != nil || found {
+		t.Fatalf("CompleteSession without start = %v, %v", found, err)
+	}
+	if sessions := readTestSessions(t, store); len(sessions) != 0 {
+		t.Fatalf("completion-only inserted %#v", sessions)
+	}
+	if err := store.RecordSession(done); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.RecordSession(start); err != nil {
+		t.Fatal(err)
+	}
+	// Same trace, different lifecycle ID, is a distinct session.
+	other := start
+	other.LifecycleRequestID = "b"
+	if err := store.RecordSession(other); err != nil {
+		t.Fatal(err)
+	}
+	if found, err := store.CompleteSession(storedRequestSession{TraceID: "1234", LifecycleRequestID: "b", CompletedAt: now, Outcome: "failure", HTTPStatus: 502}); err != nil || !found {
+		t.Fatalf("CompleteSession existing = %v, %v", found, err)
+	}
+	old := start
+	old.LifecycleRequestID = "old"
+	old.StartedAt = now.AddDate(0, 0, -31)
+	if err := store.RecordSession(old); err != nil {
+		t.Fatal(err)
+	}
+	// Write-time pruning runs once per day, so the expired session remains until forced retention.
+	sessions := readTestSessions(t, store)
+	if len(sessions) != 3 {
+		t.Fatalf("sessions after upserts = %#v", sessions)
+	}
+	a, b := sessions[1], sessions[2]
+	if a.LifecycleRequestID != "b" {
+		a, b = b, a
+	}
+	if a.LifecycleRequestID != "b" || a.Outcome != "failure" || a.HTTPStatus != 502 || a.RequestedModel != "auto" || !a.Stream {
+		t.Fatalf("session b = %#v", a)
+	}
+	if b.LifecycleRequestID != "a" || b.Outcome != "success" || b.HTTPStatus != 200 || b.Latency != time.Second || b.CompletedAt.IsZero() ||
+		b.RequestEndpoint != start.RequestEndpoint || !b.StartedAt.Equal(now) {
+		t.Fatalf("session a = %#v", b)
+	}
+	if err := pruneSQLiteDatabase(store.db, 30, time.Now().UTC(), true); err != nil {
+		t.Fatal(err)
+	}
+	if sessions := readTestSessions(t, store); len(sessions) != 2 {
+		t.Fatalf("sessions after forced retention = %#v", sessions)
+	}
+	if err := store.ResetUsage(); err != nil {
+		t.Fatal(err)
+	}
+	if sessions := readTestSessions(t, store); len(sessions) != 0 {
+		t.Fatalf("sessions after reset = %#v", sessions)
 	}
 }
 
@@ -1374,7 +1518,7 @@ func (store *usageStore) referenceUsageOverview(filter usageFilter, granularity 
 	resolver := newModelPriceResolver(book.Prices, book.SyncSettings)
 	now := time.Now().UTC()
 	overview := usageOverview{
-		SchemaVersion: usageSchemaVersion,
+		SchemaVersion: usageManagementSchemaVersion,
 		GeneratedAt:   now,
 		From:          filter.From,
 		To:            filter.To,
@@ -1547,7 +1691,7 @@ func (store *usageStore) referenceUsageGroups(filter usageFilter, dimension, sor
 	})
 	total := len(items)
 	items = paginateGroups(items, offset, limit)
-	return usageGroupPage{SchemaVersion: usageSchemaVersion, GeneratedAt: time.Now().UTC(), Dimension: dimension, Total: total, Offset: offset, Limit: limit, Items: items}, nil
+	return usageGroupPage{SchemaVersion: usageManagementSchemaVersion, GeneratedAt: time.Now().UTC(), Dimension: dimension, Total: total, Offset: offset, Limit: limit, Items: items}, nil
 }
 
 func (store *usageStore) referenceUsageRequests(filter usageFilter, sortField, order string, offset, limit int) (usageRequestPage, error) {
@@ -1584,7 +1728,7 @@ func (store *usageStore) referenceUsageRequests(filter usageFilter, sortField, o
 		}
 		items = items[offset:end]
 	}
-	return usageRequestPage{SchemaVersion: usageSchemaVersion, GeneratedAt: time.Now().UTC(), PriceBookRevision: book.Revision, Total: total, Offset: offset, Limit: limit, Items: items}, nil
+	return usageRequestPage{SchemaVersion: usageManagementSchemaVersion, GeneratedAt: time.Now().UTC(), PriceBookRevision: book.Revision, Total: total, Offset: offset, Limit: limit, Items: items}, nil
 }
 
 func compareReferenceRequests(left, right usageRequestDetail, field string) int {
