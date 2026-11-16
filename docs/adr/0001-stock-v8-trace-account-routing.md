@@ -18,4 +18,6 @@ Stock CLIProxyAPI v8.0.37 exposes inbound trace and execution request identities
 
 ## Consequences
 
+Known limitation: stock v8.0.37 invalidates the host callback instance (`loader_unix.go` `close()`) before running plugin shutdown. During unload the plugin therefore cannot close streams or emit its stalled-callback WARN through the host, and the `TestNativeUnloadAndAccountingDiagnostics` subcases (`read_stream`, `emit`, `stalled_log_callback`) fail in CI run 43980957529. This is a host lifecycle ordering issue that needs a CPA change; the plugin does not work around it and the diagnostics are not relaxed.
+
 The deployment must pair the plugin with CPA v8.0.37. Some direct traffic can have unavailable labels before a catalog refresh; labels already stored may outlive deleted accounts. Lifecycle-only failures remain visible, but unreported internal attempts cannot be shown. Trace collisions must remain explicitly ambiguous. These privacy and accuracy limits take precedence over complete-looking histories.
