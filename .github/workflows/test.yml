@@ -63,12 +63,15 @@ jobs:
       - name: Test minimum supported CPA integration
         run: CPA_SOURCE="$GITHUB_WORKSPACE/.cpa-source" go test -tags=integration ./... -count=1
       - name: Build native plugin
+        if: ${{ !cancelled() }}
         run: |
           mkdir -p dist
           CGO_ENABLED=1 go build -trimpath -buildmode=c-shared -o dist/model-router.so .
       - name: Install browser test dependencies
+        if: ${{ !cancelled() }}
         run: npm ci
       - name: Test dashboard in a disposable CPA instance
+        if: ${{ !cancelled() }}
         shell: bash
         run: |
           set -euo pipefail

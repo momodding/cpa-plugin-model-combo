@@ -254,6 +254,9 @@ openai-compatibility:
 	cacheCreationTokens := uint64(0)
 	for _, item := range page.Items {
 		for _, attempt := range item.Attempts {
+			if attempt.TraceID == "" || attempt.TraceID != item.TraceID {
+				t.Fatalf("execution trace %q does not match parent trace %q", attempt.TraceID, item.TraceID)
+			}
 			totalTokens += attempt.TotalTokens
 			cacheCreationTokens += attempt.CacheCreationTokens
 			switch attempt.Attribution {
