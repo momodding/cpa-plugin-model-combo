@@ -12,7 +12,7 @@ const SESSION_KEY='cpa_model_combo_key';
 const REJECTED_KEY='cpa_model_combo_rejected_key';
 const REJECTED_AT='cpa_model_combo_rejected_at';
 const DEFAULT_FALLBACK_ON_STATUS='401, 402, 403, 404, 408, 429, 500, 502, 503, 504';
-	const state={enabled:true,priority:'0',routes:[],fallback:{enabled:true,fallback_on_status:DEFAULT_FALLBACK_ON_STATUS,no_fallback_on_status:'',retry_codes:'',no_retry_codes:'',max_attempts:'0',stream_fallback_before_payload:true},availableModels:[],catalogLoaded:false,catalogError:'',baselineSnapshot:null,dirty:false,busy:false};
+const state={enabled:true,priority:'0',routes:[],fallback:{enabled:true,fallback_on_status:DEFAULT_FALLBACK_ON_STATUS,no_fallback_on_status:'',retry_codes:'',no_retry_codes:'',max_attempts:'0',stream_fallback_before_payload:true},quota_polling:{refresh_seconds:'60',idle_seconds:'600',ttl_seconds:'60',max_stale_seconds:'300',fetch_timeout_seconds:'5',max_concurrent:'3',cold_wait_ms:'1500',default_unknown_quota_percent:'50'},availableModels:[],catalogLoaded:false,catalogError:'',baselineSnapshot:null,dirty:false,busy:false};
 const usageState={
   active:false,initialized:false,preferencesLoaded:false,loading:false,generation:0,controller:null,timer:0,filterTimer:0,displayedRange:null,displayedFilterKey:'',pendingFullRefresh:false,preferenceTimer:0,preferenceSaveGeneration:0,preferenceSaveInFlight:false,preferenceSaveQueued:false,resizeTimer:0,
   overview:null,groupPage:null,requestPage:null,expandedRequests:new Set(),range:'24h',granularity:'hour',customFrom:'',customTo:'',attribution:'',routerModel:'',providerModel:'',source:'',serviceTier:'',result:'',pricingDialogGeneration:0,pricingWriteInFlight:null,

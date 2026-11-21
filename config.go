@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -17,6 +18,7 @@ const (
 	routeStrategyRoundRobin    = "round-robin"
 	routeStrategyRandom        = "random"
 	routeStrategyLastKnownGood = "last_known_good"
+	routeStrategyHeadroom      = "headroom"
 	defaultCooldownSeconds     = 60
 	defaultRetentionDays       = 365
 	maxRetentionDays           = 3650
@@ -90,6 +92,21 @@ func (ids *accountIDList) UnmarshalYAML(node *yaml.Node) error {
 	return nil
 }
 
+type quotaPollingConfig struct {
+	RefreshSeconds             int     `yaml:"refresh_seconds" json:"refresh_seconds"`
+	IdleSeconds                int     `yaml:"idle_seconds" json:"idle_seconds"`
+	TTLSeconds                 int     `yaml:"ttl_seconds" json:"ttl_seconds"`
+	MaxStaleSeconds            int     `yaml:"max_stale_seconds" json:"max_stale_seconds"`
+	FetchTimeoutSeconds        int     `yaml:"fetch_timeout_seconds" json:"fetch_timeout_seconds"`
+	MaxConcurrent              int     `yaml:"max_concurrent" json:"max_concurrent"`
+	ColdWaitMS                 int     `yaml:"cold_wait_ms" json:"cold_wait_ms"`
+	DefaultUnknownQuotaPercent float64 `yaml:"default_unknown_quota_percent" json:"default_unknown_quota_percent"`
+}
+
+func defaultQuotaPollingConfig() quotaPollingConfig {
+	return quotaPollingConfig{60, 600, 60, 300, 5, 3, 1500, 50}
+}
+
 type routerConfig struct {
 	Enabled            bool
 	DataPath           string
@@ -101,6 +118,7 @@ type routerConfig struct {
 	RetryCodes         []string
 	NoRetryCodes       []string
 	MaxAttempts        int
+	QuotaPolling       quotaPollingConfig
 }
 
 // fallbackPolicy resolves the configured status lists into lookup sets. An
@@ -147,6 +165,7 @@ type routerConfigYAML struct {
 	Routes        *[]modelRouteYAML   `yaml:"routes,omitempty"`
 	LegacyRoutes  *[]modelRouteYAML   `yaml:"model-routes,omitempty"`
 	Fallback      *fallbackConfigYAML `yaml:"fallback,omitempty"`
+	QuotaPolling  *yaml.Node          `yaml:"quota_polling,omitempty"`
 }
 
 func containsUnsupportedAccountAwareSchema(node *yaml.Node) bool {
@@ -186,6 +205,24 @@ func decodeRouterConfig(raw []byte) (routerConfig, error) {
 			}
 			return routerConfig{}, fmt.Errorf("decode %s config: %w", pluginID, err)
 		}
+	}
+	polling := defaultQuotaPollingConfig()
+	if wire.QuotaPolling != nil {
+		data, err := yaml.Marshal(wire.QuotaPolling)
+		if err != nil {
+			return routerConfig{}, err
+		}
+		decoder := yaml.NewDecoder(bytes.NewReader(data))
+		decoder.KnownFields(true)
+		if err := decoder.Decode(&polling); err != nil {
+			return routerConfig{}, fmt.Errorf("decode quota_polling: %w", err)
+		}
+	}
+	if polling.RefreshSeconds <= 0 || polling.IdleSeconds <= 0 || polling.TTLSeconds <= 0 || polling.MaxStaleSeconds <= 0 || polling.FetchTimeoutSeconds <= 0 || polling.MaxConcurrent <= 0 || polling.ColdWaitMS <= 0 || polling.TTLSeconds > polling.MaxStaleSeconds {
+		return routerConfig{}, errors.New("quota_polling intervals and concurrency must be positive and ttl_seconds must not exceed max_stale_seconds")
+	}
+	if math.IsNaN(polling.DefaultUnknownQuotaPercent) || math.IsInf(polling.DefaultUnknownQuotaPercent, 0) || polling.DefaultUnknownQuotaPercent < 0 || polling.DefaultUnknownQuotaPercent > 100 {
+		return routerConfig{}, errors.New("quota_polling.default_unknown_quota_percent must be between 0 and 100")
 	}
 	if wire.Routes != nil && wire.LegacyRoutes != nil {
 		return routerConfig{}, errors.New("model-combo config must not contain both routes and model-routes")
@@ -350,6 +387,7 @@ func decodeRouterConfig(raw []byte) (routerConfig, error) {
 		RetryCodes:         retryCodes,
 		NoRetryCodes:       noRetryCodes,
 		MaxAttempts:        maxAttempts,
+		QuotaPolling:       polling,
 	}, nil
 }
 
@@ -382,8 +420,8 @@ func validateRoute(route modelRoute, index int, aliases map[string]int) error {
 	if previous, duplicate := aliases[routeKey(route.Alias)]; duplicate {
 		return fmt.Errorf("routes[%d] %q: duplicate alias (also at index %d)", index, route.Alias, previous)
 	}
-	if route.Strategy != routeStrategyPriority && route.Strategy != routeStrategyRoundRobin && route.Strategy != routeStrategyRandom && route.Strategy != routeStrategyLastKnownGood {
-		return fmt.Errorf("routes[%d] %q: strategy must be %q, %q, %q, or %q", index, route.Alias, routeStrategyPriority, routeStrategyRoundRobin, routeStrategyRandom, routeStrategyLastKnownGood)
+	if route.Strategy != routeStrategyPriority && route.Strategy != routeStrategyRoundRobin && route.Strategy != routeStrategyRandom && route.Strategy != routeStrategyLastKnownGood && route.Strategy != routeStrategyHeadroom {
+		return fmt.Errorf("routes[%d] %q: strategy must be %q, %q, %q, %q, or %q", index, route.Alias, routeStrategyPriority, routeStrategyRoundRobin, routeStrategyRandom, routeStrategyLastKnownGood, routeStrategyHeadroom)
 	}
 	if route.CooldownSeconds < 0 {
 		return fmt.Errorf("routes[%d] %q: cooldown_seconds must be >= 0", index, route.Alias)
@@ -472,6 +510,7 @@ func routeSignature(route modelRoute) string {
 	builder.WriteString(route.Strategy)
 	builder.WriteByte('\n')
 	builder.WriteString(strconv.Itoa(route.CooldownSeconds))
+	builder.WriteByte('\n')
 	for _, target := range route.Targets {
 		builder.WriteByte('\n')
 		builder.WriteString(strings.TrimSpace(target.Model))

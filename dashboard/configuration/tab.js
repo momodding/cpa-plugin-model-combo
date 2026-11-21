@@ -2,7 +2,8 @@ function configurationSnapshot(){
   return JSON.stringify({
     enabled:Boolean(state.enabled),
     priority:canonicalIntegerDraft(state.priority),
-		fallback:Object.fromEntries(Object.entries(state.fallback).map(([key,value])=>[key,key==='enabled'||key==='stream_fallback_before_payload'?Boolean(value):String(value).trim()])),
+    fallback:Object.fromEntries(Object.entries(state.fallback).map(([key,value])=>[key,key==='enabled'||key==='stream_fallback_before_payload'?Boolean(value):String(value).trim()])),
+    quota_polling:Object.fromEntries(Object.entries(state.quota_polling).map(([key,value])=>[key,String(value).trim()])),
     routes:state.routes.map(route=>({
       alias:String(route.alias===undefined||route.alias===null?'':route.alias).trim(),
       strategy:String(route.strategy===undefined||route.strategy===null?'':route.strategy),
@@ -86,6 +87,7 @@ function setDirty(value){
   state.dirty=value;
   saveStateEl.dataset.dirty=String(value);
   saveStateEl.textContent=value?'Unsaved changes':'Saved in CPA';
+  document.getElementById('quota-save-state').textContent=value?'Unsaved changes':'Saved in CPA';
   setConfigurationActionsVisible(value);
 }
 function refreshDirty(){
@@ -156,6 +158,9 @@ async function loadConfiguration(){
     state.priority=loaded.priority;
     state.routes=loaded.routes;
     state.fallback=loaded.fallback;
+    state.quota_polling=loaded.quota_polling;
+    for(const [key,value] of Object.entries(state.quota_polling))document.querySelector(`[data-quota-field="${key}"]`).value=value;
+    document.getElementById('quota-save-state').textContent='Loaded from CPA';
     for(const[key,value]of Object.entries(state.fallback)){
       const el=document.querySelector(`[data-fallback-field="${key}"]`);
       if(el){if(el.type==='checkbox')el.checked=value;else el.value=value}
@@ -238,8 +243,8 @@ function createRouteCard(route,index){
   card.querySelector('[data-field="alias"]').value=route.alias;
   card.querySelector('[data-field="strategy"]').value=route.strategy;
   card.querySelector('[data-field="cooldown_seconds"]').value=route.cooldown_seconds;
+  card.querySelector('[data-headroom-help]').hidden=route.strategy!=='headroom';
   card.querySelector('[data-lkg-fields]').hidden=route.strategy!=='last_known_good';
-  for(const key of LKG_KEYS)card.querySelector('[data-field="'+key+'"]').value=route[key]??(route.strategy==='last_known_good'?DEFAULT_LKG[key]:'');
   card.querySelector('[data-action="up"]').disabled=index===0;
   card.querySelector('[data-action="down"]').disabled=index===state.routes.length-1;
   const addTarget=card.querySelector('[data-action="add-target"]');
@@ -485,25 +490,30 @@ function validateClient(routes){
     });
   });
   if(!/^-?\d+$/.test(state.priority.trim()))errors.push('Priority must be an integer.');
-  return errors.concat(validateFallback(state.fallback));
+  return errors.concat(validateFallback(state.fallback),validateQuota(state.quota_polling));
 }
 async function saveConfiguration(){
   if(state.busy||!state.dirty)return;
   const routes=serializeRoutesFromState();
   const errors=validateClient(routes);
-  if(errors.length){showToast(errors[0]+(errors.length>1?' '+(errors.length-1)+' more issue(s).':''),'error');return}
+  if(errors.length){document.getElementById('quota-save-state').textContent=errors[0];showToast(errors[0]+(errors.length>1?' '+(errors.length-1)+' more issue(s).':''),'error');return}
   const submittedSnapshot=configurationSnapshot();
   setBusy(true);
   saveStateEl.textContent='Validating…';
+  document.getElementById('quota-save-state').textContent='Validating…';
   try{
-    await requestManagementJSON(VALIDATE_API,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({enabled:state.enabled,routes})});
+    await requestManagementJSON(VALIDATE_API,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({enabled:state.enabled,routes,quota_polling:quotaFromState(state.quota_polling)})});
     saveStateEl.textContent='Saving…';
+    document.getElementById('quota-save-state').textContent='Saving…';
     await requestManagementJSON(CONFIG_API,{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify(configurationPatchBody(state))});
     captureConfigurationBaseline(submittedSnapshot);
+    document.getElementById('quota-save-state').textContent='Saved in CPA';
     showToast('Model routes saved; config changes apply asynchronously.','success');
+    if(!document.getElementById('quota-panel').hidden)refreshQuota();
   }catch(error){
     refreshDirty();
     if(state.dirty)saveStateEl.textContent='Save failed';
+    document.getElementById('quota-save-state').textContent='Save failed: '+error.message;
     showToast(error.message,'error');
   }finally{setBusy(false)}
 }
@@ -517,4 +527,7 @@ function initializeConfigurationEvents() {
   reloadEl.addEventListener('click',()=>{if(!state.dirty||window.confirm('Discard unsaved changes and reload from CPA?'))loadConfiguration()});
   saveEl.addEventListener('click',saveConfiguration);
   document.querySelectorAll('[data-fallback-field]').forEach(el=>el.addEventListener(el.type==='checkbox'?'change':'input',()=>{state.fallback[el.dataset.fallbackField]=el.type==='checkbox'?el.checked:el.value;refreshDirty()}));
+  document.querySelectorAll('[data-quota-field]').forEach(el=>el.addEventListener('input',()=>{state.quota_polling[el.dataset.quotaField]=el.value;refreshDirty()}));
+  document.getElementById('quota-save').addEventListener('click',saveConfiguration);
+  document.getElementById('quota-reload').addEventListener('click',()=>{if(!state.dirty||window.confirm('Discard unsaved changes and reload from CPA?'))loadConfiguration()});
 }

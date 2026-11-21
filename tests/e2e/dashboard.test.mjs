@@ -76,7 +76,7 @@ test('dashboard tabs retain their browser interactions after source assembly', {
     await page.locator('#workspace').waitFor({ state: 'visible' });
     await page.locator('#model-status[data-tone="ready"]').waitFor();
 
-    assert.equal(await page.locator('[role="tab"]').count(), 2);
+    assert.equal(await page.locator('[role="tab"]').count(), 3);
     assert.equal(await page.locator('#configuration-tab').getAttribute('aria-selected'), 'true');
     assert.deepEqual(await routeAliases(page), [], 'the disposable E2E instance should start without routes');
 
@@ -328,6 +328,36 @@ test('dashboard tabs retain their browser interactions after source assembly', {
   } finally {
     await browser.close();
   }
+});
+
+test('quota settings persist and unknown accounts display the configured default', { timeout: 120_000 }, async () => {
+  const { dashboardUrl, managementKey, executablePath } = dashboardEnvironment();
+  const browser = await chromium.launch({ executablePath, headless: true, args: ['--no-sandbox', '--disable-setuid-sandbox'] });
+  const page = await browser.newPage();
+  let config = { enabled: true, priority: 0, routes: [] };
+  try {
+    await page.route('**/v0/management/plugins/model-combo/accounts', route => route.fulfill({ json: { credentials: [] } }));
+    await page.route('**/v0/management/plugins/model-combo/config', route => {
+      if (route.request().method() === 'PATCH') config = route.request().postDataJSON();
+      return route.fulfill({ json: config });
+    });
+    await page.route('**/v0/management/plugins/model-combo/validate', route => route.fulfill({ json: {} }));
+    await page.route('**/v0/management/plugins/model-combo/quota-status', route => route.fulfill({ json: { running: true, active_keys: 1, credentials: [{ label: 'Test account', provider: 'test', state: 'unknown', reason: 'unsupported_provider', effective_percent: config.quota_polling?.default_unknown_quota_percent ?? 50, score_source: 'configured-default', windows: [] }] } }));
+    await page.goto(dashboardUrl, { waitUntil: 'domcontentloaded' });
+    if (await page.locator('#auth-dock').isVisible()) { await page.locator('#management-key').fill(managementKey); await page.locator('#connect').click(); }
+    await page.locator('#workspace').waitFor({ state: 'visible' });
+    await page.getByRole('tab', { name: 'Quota tracking' }).click();
+    await page.locator('#quota-default').fill('35');
+    await page.locator('#quota-save').click();
+    await page.waitForFunction(() => document.querySelector('#quota-save-state').textContent === 'Saved in CPA');
+    assert.equal(config.quota_polling.default_unknown_quota_percent, 35);
+    await page.reload();
+    if (await page.locator('#auth-dock').isVisible()) { await page.locator('#management-key').fill(managementKey); await page.locator('#connect').click(); }
+    await page.locator('#workspace').waitFor({ state: 'visible' });
+    await page.getByRole('tab', { name: 'Quota tracking' }).click();
+    assert.equal(await page.locator('#quota-default').inputValue(), '35');
+    await page.getByText('unknown · Effective 35% (configured-default) · unsupported_provider').waitFor();
+  } finally { await browser.close(); }
 });
 
 test('account restrictions filter targets and reject stale selections', { timeout: 120_000 }, async () => {

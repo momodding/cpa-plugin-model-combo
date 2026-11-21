@@ -30,7 +30,7 @@
       <div class="field-grid">
         <div class="field">
           <label>Selection strategy</label>
-          <select data-field="strategy"><option value="priority">Priority order</option><option value="round-robin">Round robin</option><option value="random">Random</option><option value="last_known_good">Last known good</option></select>
+          <select data-field="strategy"><option value="priority">Priority order</option><option value="round-robin">Round robin</option><option value="random">Random</option><option value="last_known_good">Last known good</option><option value="headroom">Quota headroom</option></select>
         </div>
         <div class="field">
           <label>Cooldown seconds</label>
@@ -38,6 +38,7 @@
           <small>Zero uses the 60-second default.</small>
         </div>
       </div>
+      <small data-headroom-help hidden>Uses current quota to rank this route's eligible accounts. Polling settings are in Quota tracking.</small>
 
       <div class="field-grid" data-lkg-fields hidden>
         <div class="field">

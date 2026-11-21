@@ -3,19 +3,21 @@ function setUsageStatus(message,tone='info'){
   usageStatusEl.dataset.tone=tone;
 }
 function activateTab(name,moveFocus=false){
-  const usage=name==='usage';
+  const usage=name==='usage', quota=name==='quota';
   tabs.forEach(tab=>{
-    const selected=tab.id===(usage?'usage-tab':'configuration-tab');
+    const selected=tab.id===name+'-tab';
     tab.setAttribute('aria-selected',String(selected));
     tab.tabIndex=selected?0:-1;
     if(selected&&moveFocus)tab.focus();
   });
-  configurationPanelEl.hidden=usage;
+  configurationPanelEl.hidden=usage||quota;
   usagePanelEl.hidden=!usage;
+  document.getElementById('quota-panel').hidden=!quota;
   updateConfigurationActionsClearance();
   usageState.active=usage;
   if(usage)startUsageDashboard();
   else{clearChartActive(false);stopUsagePolling()}
+  if(quota&&!document.hidden)refreshQuota();else stopQuotaPolling();
 }
 function handleTabKey(event){
   const current=tabs.indexOf(event.currentTarget);
@@ -26,7 +28,7 @@ function handleTabKey(event){
   else if(event.key==='End')next=tabs.length-1;
   else return;
   event.preventDefault();
-  activateTab(tabs[next].id==='usage-tab'?'usage':'configuration',true);
+  activateTab(tabs[next].id.replace(/-tab$/,''),true);
 }
 function stopUsagePolling(){
   window.clearTimeout(usageState.filterTimer);

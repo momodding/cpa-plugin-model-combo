@@ -24,6 +24,7 @@ type modelRouterPlugin struct {
 	modelsDevFetcher modelsDevCatalogFetcher
 	priceSync        *priceSyncState
 	credentials      *credentialSnapshots
+	quota            *quotaManager
 }
 
 var (
@@ -46,6 +47,7 @@ func newModelRouterPlugin(configYAML []byte, previous *modelRouterPlugin) (*mode
 	var fetcher modelsDevCatalogFetcher
 	priceSync := &priceSyncState{}
 	credentials := &credentialSnapshots{}
+	var quota *quotaManager
 	if previous != nil {
 		runtime = previous.runtime.Clone(cfg.Routes)
 		store = previous.store
@@ -53,6 +55,7 @@ func newModelRouterPlugin(configYAML []byte, previous *modelRouterPlugin) (*mode
 		fetcher = previous.modelsDevFetcher
 		priceSync = previous.priceSync
 		credentials = previous.credentials
+		quota = previous.quota
 		if credentials == nil {
 			credentials = &credentialSnapshots{}
 		}
@@ -72,7 +75,18 @@ func newModelRouterPlugin(configYAML []byte, previous *modelRouterPlugin) (*mode
 			return nil, pluginapi.Metadata{}, err
 		}
 	}
-	plugin := &modelRouterPlugin{config: cfg, runtime: runtime, store: store, attribution: attribution, modelsDevFetcher: fetcher, priceSync: priceSync, credentials: credentials}
+	if quota == nil {
+		quota = newQuotaManager(cfg.QuotaPolling)
+	}
+	hasHeadroom := false
+	for _, route := range cfg.Routes {
+		if route.Strategy == routeStrategyHeadroom {
+			hasHeadroom = true
+			break
+		}
+	}
+	quota.Reconcile(cfg.QuotaPolling, hasHeadroom)
+	plugin := &modelRouterPlugin{config: cfg, runtime: runtime, store: store, attribution: attribution, modelsDevFetcher: fetcher, priceSync: priceSync, credentials: credentials, quota: quota}
 	metadata := pluginapi.Metadata{
 		Name:             pluginName,
 		Version:          pluginVersion,
@@ -83,6 +97,7 @@ func newModelRouterPlugin(configYAML []byte, previous *modelRouterPlugin) (*mode
 			{Name: "data_path", Type: pluginapi.ConfigFieldTypeString, Description: "SQLite usage database path; defaults to cpa-model-combo.db in the discovered CPA plugins directory."},
 			{Name: "retention_days", Type: pluginapi.ConfigFieldTypeInteger, Description: "Number of UTC days of usage aggregates and request details to retain (1-3650)."},
 			{Name: "fallback", Type: pluginapi.ConfigFieldTypeObject, Description: "Status codes that move a routed request to the next target: fallback_on_status, no_fallback_on_status, stream_fallback_before_payload."},
+			{Name: "quota_polling", Type: pluginapi.ConfigFieldTypeObject, Description: "Quota polling and unknown headroom settings."},
 		},
 	}
 	return plugin, metadata, nil

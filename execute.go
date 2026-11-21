@@ -38,6 +38,9 @@ func (p *modelRouterPlugin) executeWithHost(request pluginapi.ExecutorRequest, h
 	if err != nil {
 		return pluginapi.ExecutorResponse{}, err
 	}
+	if route.Strategy == routeStrategyHeadroom {
+		return p.executeHeadroom(request, host, route, bodyInfo, routerRequestID, accounts, unavailable)
+	}
 	var lastErr error
 	var lastTarget string
 	lastStatus := 0
@@ -120,7 +123,7 @@ func (p *modelRouterPlugin) executeWithHost(request pluginapi.ExecutorRequest, h
 
 // routeAccounts snapshots the eligible accounts once and excludes targets with no compatible account.
 func (p *modelRouterPlugin) routeAccounts(route modelRoute, requestedModel string, host modelHost) (map[string][]accountCredential, map[string]struct{}, error) {
-	if len(route.AllowedAccounts) == 0 {
+	if len(route.AllowedAccounts) == 0 && route.Strategy != routeStrategyHeadroom {
 		return nil, nil, nil
 	}
 	catalog, err := p.accountCatalog(host)
@@ -133,11 +136,17 @@ func (p *modelRouterPlugin) routeAccounts(route modelRoute, requestedModel strin
 			byID[account.ID] = account
 		}
 	}
+	order := route.AllowedAccounts
+	if len(order) == 0 {
+		for _, account := range catalog {
+			order = append(order, account.ID)
+		}
+	}
 	eligible := make(map[string][]accountCredential, len(route.Targets))
 	unavailable := make(map[string]struct{})
 	for _, target := range route.Targets {
 		key := routeKey(target.Model)
-		for _, id := range route.AllowedAccounts {
+		for _, id := range order {
 			if account, ok := byID[id]; ok && account.supportsModel(targetModel(requestedModel, target.Model)) {
 				eligible[key] = append(eligible[key], account)
 			}

@@ -1,0 +1,9 @@
+#quota-panel{max-width:1200px;margin-inline:auto}
+#quota-panel>.field-grid{margin-block:1.25rem}
+#quota-panel .field input{max-width:22rem}
+#quota-panel #quota-results{display:grid;gap:.75rem;margin-top:1rem}
+#quota-panel #quota-results .fallback-settings{margin:0}
+#quota-panel #quota-results h3{margin-top:0}
+#quota-panel #quota-status,#quota-panel #quota-selection{color:var(--muted,#64748b)}
+#quota-panel [aria-live]{overflow-wrap:anywhere}
+@media(max-width:640px){#quota-panel .footer-actions{flex-wrap:wrap;align-items:center}}

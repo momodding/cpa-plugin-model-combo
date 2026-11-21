@@ -1,4 +1,4 @@
-const STRATEGIES=['priority','round-robin','random','last_known_good'];
+const STRATEGIES=['priority','round-robin','random','last_known_good','headroom'];
 const LKG_KEYS=['success_rate_threshold','minimum_samples','observation_window_minutes'];
 const DEFAULT_LKG={success_rate_threshold:'0.9',minimum_samples:'20',observation_window_minutes:'60'};
 function canonicalIntegerDraft(value){
@@ -102,13 +102,32 @@ function fallbackDraftFromConfig(value){
 		stream_fallback_before_payload:fallback.stream_fallback_before_payload===true
   };
 }
+const DEFAULT_QUOTA_POLLING={refresh_seconds:60,idle_seconds:600,ttl_seconds:60,max_stale_seconds:300,fetch_timeout_seconds:5,max_concurrent:3,cold_wait_ms:1500,default_unknown_quota_percent:50};
+function quotaDraftFromConfig(value){
+  const quota=value&&typeof value==='object'?value:{};
+  return Object.fromEntries(Object.entries(DEFAULT_QUOTA_POLLING).map(([key,defaultValue])=>[key,String(quota[key]??defaultValue)]));
+}
+function quotaFromState(quota){return Object.fromEntries(Object.keys(DEFAULT_QUOTA_POLLING).map(key=>[key,Number(quota[key])]));}
+function validateQuota(quota){
+  const errors=[];
+  for(const key of Object.keys(DEFAULT_QUOTA_POLLING)){
+    const raw=String(quota[key]??'').trim(), value=Number(raw);
+    if(key==='default_unknown_quota_percent'){
+      if(!raw||!Number.isFinite(value)||value<0||value>100)errors.push('Default unknown quota must be between 0 and 100.');
+    }else if(!/^\d+$/.test(raw)||!Number.isSafeInteger(value)||value<=0)errors.push('Quota '+key.replace(/_/g,' ')+' must be a positive integer.');
+  }
+  if(Number(quota.ttl_seconds)>Number(quota.max_stale_seconds))errors.push('Quota TTL must not exceed max stale seconds.');
+  if(!Object.values(quota).every(value=>Number.isFinite(Number(value))))errors.push('Quota polling values must be finite numbers.');
+  return errors;
+}
 function configFromResponse(config){
   const source=Array.isArray(config.routes)?config.routes:(Array.isArray(config['model-routes'])?config['model-routes']:[]);
   return{
     enabled:config.enabled!==false,
     priority:Number.isInteger(config.priority)?String(config.priority):'0',
     routes:source.map(normalizeRoute),
-    fallback:fallbackDraftFromConfig(config.fallback)
+    fallback:fallbackDraftFromConfig(config.fallback),
+    quota_polling:quotaDraftFromConfig(config.quota_polling)
   };
 }
 function parseCodeList(raw){
@@ -151,6 +170,7 @@ function configurationPatchBody(state){
     priority:integerDraftValue(state.priority),
     routes:serializeRoutes(state.routes),
     fallback:fallbackFromState(state.fallback),
+    quota_polling:quotaFromState(state.quota_polling||quotaDraftFromConfig()),
     'model-routes':null
   };
 }

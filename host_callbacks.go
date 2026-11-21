@@ -83,6 +83,19 @@ func (host callbackModelHost) AuthList() ([]pluginapi.HostAuthFileEntry, error) 
 	return response.Files, nil
 }
 
+func (host callbackModelHost) AffinityLookup(request pluginapi.HostAffinityLookupRequest) (pluginapi.HostAffinityLookupResponse, error) {
+	result, err := callHost(pluginabi.MethodHostAffinityLookup, struct {
+		pluginapi.HostAffinityLookupRequest
+		HostCallbackID string `json:"host_callback_id,omitempty"`
+	}{request, host.hostCallbackID})
+	if err != nil {
+		return pluginapi.HostAffinityLookupResponse{}, err
+	}
+	var response pluginapi.HostAffinityLookupResponse
+	err = json.Unmarshal(result, &response)
+	return response, err
+}
+
 func (callbackModelHost) ReadStream(streamID string) (pluginapi.HostModelStreamReadResponse, error) {
 	result, err := callHost(pluginabi.MethodHostModelStreamRead, pluginapi.HostModelStreamReadRequest{StreamID: streamID})
 	if err != nil {

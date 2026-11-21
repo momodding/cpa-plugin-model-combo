@@ -11,11 +11,12 @@ import (
 )
 
 const (
-	modelRouterDashboardPath  = "/v0/resource/plugins/" + pluginID + "/config"
-	modelRouterValidationPath = "/v0/management/plugins/" + pluginID + "/validate"
-	modelRouterAccountsPath   = "/v0/management/plugins/" + pluginID + "/accounts"
-	modelRouterUsageBasePath  = "/v0/management/plugins/" + pluginID + "/usage"
-	maxManagementRequestBytes = 1 << 20
+	modelRouterDashboardPath        = "/v0/resource/plugins/" + pluginID + "/config"
+	modelRouterValidationPath       = "/v0/management/plugins/" + pluginID + "/validate"
+	modelRouterAccountsPath         = "/v0/management/plugins/" + pluginID + "/accounts"
+	modelRouterQuotaDiagnosticsPath = "/v0/management/plugins/" + pluginID + "/quota-status"
+	modelRouterUsageBasePath        = "/v0/management/plugins/" + pluginID + "/usage"
+	maxManagementRequestBytes       = 1 << 20
 )
 
 func isModelRouterDashboardPath(path string) bool {
@@ -54,6 +55,7 @@ func modelRouterManagementRegistration() managementRegistrationResponse {
 	return managementRegistrationResponse{
 		Routes: []managementRoute{
 			{Method: http.MethodGet, Path: "/plugins/" + pluginID + "/accounts", Description: "Read available account models."},
+			{Method: http.MethodGet, Path: "/plugins/" + pluginID + "/quota-status", Description: "Read quota polling diagnostics."},
 			{Method: http.MethodPost, Path: "/plugins/" + pluginID + "/validate", Description: "Validate Model Combo configuration before saving it."},
 			{Method: http.MethodGet, Path: "/plugins/" + pluginID + "/usage/dashboard", Description: "Read usage summaries and both tables from one snapshot."},
 			{Method: http.MethodGet, Path: "/plugins/" + pluginID + "/usage/overview", Description: "Read usage summaries, trends, costs, and model breakdowns."},
@@ -109,6 +111,11 @@ func handleModelRouterManagementWithHost(plugin *modelRouterPlugin, request plug
 		}
 	}
 	switch path {
+	case modelRouterQuotaDiagnosticsPath:
+		if !strings.EqualFold(request.Method, http.MethodGet) {
+			return modelRouterJSONResponse(http.StatusMethodNotAllowed, map[string]any{"error": "method_not_allowed", "message": "quota diagnostics only supports GET"})
+		}
+		return modelRouterJSONResponse(http.StatusOK, quotaDiagnostics(plugin))
 	case modelRouterAccountsPath:
 		if !strings.EqualFold(request.Method, http.MethodGet) {
 			return modelRouterJSONResponse(http.StatusMethodNotAllowed, map[string]any{"error": "method_not_allowed", "message": "accounts only supports GET"})

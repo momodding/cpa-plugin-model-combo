@@ -1,0 +1,19 @@
+    <section id="quota-panel" class="tab-panel" role="tabpanel" aria-labelledby="quota-tab" hidden>
+      <div class="section-head"><div class="section-title"><h2>Quota polling</h2></div></div>
+      <p>Headroom routes use current provider quota when available. Unknown quota uses the configured percentage; it is not a provider measurement.</p>
+      <div class="field-grid">
+        <div class="field"><label for="quota-default">Default unknown quota (%)</label><input id="quota-default" data-quota-field="default_unknown_quota_percent" type="number" min="0" max="100" step="any" value="50"></div>
+        <div class="field"><label for="quota-refresh">Refresh interval (seconds)</label><input id="quota-refresh" data-quota-field="refresh_seconds" type="number" min="1" step="1"></div>
+        <div class="field"><label for="quota-idle">Idle timeout (seconds)</label><input id="quota-idle" data-quota-field="idle_seconds" type="number" min="1" step="1"></div>
+        <div class="field"><label for="quota-ttl">Freshness TTL (seconds)</label><input id="quota-ttl" data-quota-field="ttl_seconds" type="number" min="1" step="1"></div>
+        <div class="field"><label for="quota-stale">Maximum backoff (seconds)</label><input id="quota-stale" data-quota-field="max_stale_seconds" type="number" min="1" step="1"><small>Previous quota is never used after TTL or a failed poll.</small></div>
+        <div class="field"><label for="quota-timeout">Fetch timeout (seconds)</label><input id="quota-timeout" data-quota-field="fetch_timeout_seconds" type="number" min="1" step="1"></div>
+        <div class="field"><label for="quota-concurrent">Maximum concurrent fetches</label><input id="quota-concurrent" data-quota-field="max_concurrent" type="number" min="1" step="1"></div>
+        <div class="field"><label for="quota-wait">Cold wait (milliseconds)</label><input id="quota-wait" data-quota-field="cold_wait_ms" type="number" min="1" step="1"></div>
+      </div>
+      <div class="footer-actions"><span id="quota-save-state" aria-live="polite">Loaded from CPA</span><button id="quota-reload" class="secondary" type="button">Discard and reload</button><button id="quota-save" class="primary" type="button">Save changes</button></div>
+      <div class="section-head"><div class="section-title"><h2>Current quota</h2></div></div>
+      <p id="quota-status" aria-live="polite">Open quota tracking to load status.</p>
+      <div id="quota-results" aria-live="polite"></div>
+      <p id="quota-selection"></p>
+    </section>

@@ -56,6 +56,9 @@ func (p *modelRouterPlugin) accountCatalog(host modelHost) ([]accountCredential,
 	}
 	if p != nil {
 		p.credentials.replace(entries)
+		if p.quota != nil {
+			p.quota.UpdateAuthEntries(entries)
+		}
 	}
 	byID := make(map[string]pluginapi.HostAuthFileEntry, len(entries))
 	for _, entry := range entries {
